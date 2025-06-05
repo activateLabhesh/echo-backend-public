@@ -12,6 +12,7 @@ model User {
   email          String           @unique
   username       String           @unique
   passwordHash   String
+  refreshToken   String? 
   avatarUrl      String?
   status         String           @default("offline")
   createdAt      DateTime         @default(now())
