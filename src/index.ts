@@ -1,12 +1,13 @@
 import dotenv from 'dotenv';
 import authRoutes from './routes/auth';
 import cookieParser from 'cookie-parser';
-import 'dotenv/config';
-import express, { Request, Response } from 'express'
-import './client/supabase'
-import { checkBucketConnection } from './lib/storage'
+import express, { Request, Response } from 'express';
+import messages from './routes/message';
+import './client/supabase';
+import { checkBucketConnection } from './lib/storage';
 
 dotenv.config();
+checkBucketConnection().catch(console.error);
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -14,14 +15,14 @@ const PORT = process.env.PORT || 5000;
 app.use(express.json());
 app.use(cookieParser());
 
-app.use('/api/auth',authRoutes);
-
-checkBucketConnection().catch(console.error)
 
 app.get('/', (_req: Request, res: Response) => {
-  res.send('Hello from echo-backend!')
-})
+  res.send('Hello from echo-backend!');
+});
+
+app.use('/api/auth', authRoutes);
+app.use('api/message', messages);
 
 app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`)
-})
+  console.log(`Server is running on port ${PORT}`);
+});
