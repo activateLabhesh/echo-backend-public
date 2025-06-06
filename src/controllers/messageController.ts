@@ -2,14 +2,8 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 import type { Request, Response } from "express";
-
+import { supabase } from '../client/supabase';
 import {v4} from 'uuid';
-
-import {createClient} from '@supabase/supabase-js';
-const supabase = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY! 
-);
 
 export const messagePostController = async (req:Request, res:Response):Promise<any>=>{
     
