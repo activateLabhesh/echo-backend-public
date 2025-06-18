@@ -5,6 +5,11 @@ import jwt from 'jsonwebtoken';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret';
 
+export interface AuthenticatedRequest extends Request {
+  user?: { userId: string; email?: string };
+  userEmail?: string;
+}
+
 export const authenticate = (req: Request, res: Response, next: NextFunction) => {
   let token: string| undefined;
 
@@ -21,8 +26,9 @@ export const authenticate = (req: Request, res: Response, next: NextFunction) =>
   }
   
   try {
-    const payload = jwt.verify(token, JWT_SECRET) as { userId: string };
-    (req as any).user = payload; 
+    const payload = jwt.verify(token, JWT_SECRET) as { userId: string; email?: string };
+    (req as AuthenticatedRequest).user = payload;
+    (req as AuthenticatedRequest).userEmail = payload.email;
     next();
   } catch (err) {
     res.status(403).json({ message: 'Invalid token' });

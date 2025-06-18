@@ -1,11 +1,11 @@
 import express from 'express';
-import { authenticateToken } from '../middleware/authMiddleware';
+import { authenticate } from '../middleware/authMiddleware';
 import { updateProfile, upload, updateStatus } from '../controllers/profileController';
 
 const router = express.Router();
 
-router.put('/update', authenticateToken, upload.single('avatar'), updateProfile);
+router.put('/update', authenticate, upload.single('avatar'), updateProfile);
 
-router.put('/update-status', authenticateToken, updateStatus);
+router.put('/update-status', authenticate, updateStatus);
 
 export default router;

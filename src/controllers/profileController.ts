@@ -11,7 +11,8 @@ export const upload = multer({ storage });
 export const updateProfile = async (req: AuthenticatedRequest, res: Response) => {
   const email = req.userEmail;
   if (!email) {
-    return res.status(400).json({ error: 'User email not found in request' });
+    res.status(400).json({ error: 'User email not found in request' });
+    return;
   }
 
   const { username, bio } = req.body;
@@ -32,7 +33,8 @@ export const updateProfile = async (req: AuthenticatedRequest, res: Response) =>
       });
 
     if (uploadError) {
-      return res.status(500).json({ error: 'Image upload failed', detail: uploadError.message });
+      res.status(500).json({ error: 'Image upload failed', detail: uploadError.message });
+      return;
     }
 
     const { data: publicUrlData } = supabase.storage.from('avatars').getPublicUrl(fileName);
@@ -40,7 +42,8 @@ export const updateProfile = async (req: AuthenticatedRequest, res: Response) =>
   }
 
   if (Object.keys(updateData).length === 0) {
-    return res.status(400).json({ error: 'No fields provided for update' });
+    res.status(400).json({ error: 'No fields provided for update' });
+    return;
   }
 
   const { data, error } = await supabase
@@ -50,7 +53,8 @@ export const updateProfile = async (req: AuthenticatedRequest, res: Response) =>
     .select();
 
   if (error) {
-    return res.status(500).json({ error: error.message });
+    res.status(500).json({ error: error.message });
+    return;
   }
 
   res.status(200).json({ message: 'Profile updated', user: data?.[0] });
@@ -59,12 +63,14 @@ export const updateProfile = async (req: AuthenticatedRequest, res: Response) =>
 export const updateStatus = async (req: AuthenticatedRequest, res: Response) => {
   const email = req.userEmail;
   if (!email) {
-    return res.status(400).json({ error: 'User email not found in request' });
+    res.status(400).json({ error: 'User email not found in request' });
+    return;
   }
 
   const { status } = req.body;
   if (!status) {
-    return res.status(400).json({ error: 'Status is required' });
+    res.status(400).json({ error: 'Status is required' });
+    return;
   }
 
   const { data, error } = await supabase
@@ -74,7 +80,8 @@ export const updateStatus = async (req: AuthenticatedRequest, res: Response) => 
     .select();
 
   if (error) {
-    return res.status(500).json({ error: error.message });
+    res.status(500).json({ error: error.message });
+    return;
   }
 
   res.status(200).json({ message: 'Status updated', user: data?.[0] });
