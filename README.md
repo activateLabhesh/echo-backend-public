@@ -10,6 +10,72 @@ Before you begin, ensure you have the following installed:
     * [Install Docker Desktop](https://www.docker.com/products/docker-desktop/)
 * **Git**: For cloning the repository.
     * [Install Git](https://git-scm.com/downloads)
+* **Vercel CLI** (for deployment): Install globally for deployment.
+    * ```bash
+      npm install -g vercel
+      ```
+
+---
+
+## 🚀 Deployment to Vercel
+
+### Prerequisites for Deployment
+
+1. **Vercel Account**: Sign up at [vercel.com](https://vercel.com)
+2. **Environment Variables**: Set up your environment variables in Vercel dashboard or via CLI
+
+### Deployment Steps
+
+1. **Login to Vercel** (if not already logged in):
+   ```bash
+   vercel login
+   ```
+
+2. **Set Environment Variables**:
+   You can set environment variables either through the Vercel dashboard or using the CLI:
+   ```bash
+   vercel env add SUPABASE_URL
+   vercel env add SUPABASE_ANON_KEY
+   vercel env add SUPABASE_SERVICE_ROLE_KEY
+   vercel env add SUPABASE_S3_ACCESS_KEY
+   vercel env add SUPABASE_S3_SECRET_KEY
+   vercel env add SUPABASE_S3_ENDPOINT
+   vercel env add FRONTEND_URL
+   ```
+
+3. **Deploy to Production**:
+   ```bash
+   npm run deploy
+   ```
+   Or manually:
+   ```bash
+   vercel --prod
+   ```
+
+4. **For Development/Preview Deployments**:
+   ```bash
+   vercel
+   ```
+
+### Environment Variables Required
+
+Make sure to set these environment variables in your Vercel project:
+
+- `SUPABASE_URL`: Your Supabase project URL
+- `SUPABASE_ANON_KEY`: Your Supabase anonymous key
+- `SUPABASE_SERVICE_ROLE_KEY`: Your Supabase service role key
+- `SUPABASE_S3_ACCESS_KEY`: Your Supabase S3 access key
+- `SUPABASE_S3_SECRET_KEY`: Your Supabase S3 secret key
+- `SUPABASE_S3_ENDPOINT`: Your Supabase S3 endpoint
+- `FRONTEND_URL`: Your frontend application URL (for CORS)
+
+### API Endpoints
+
+After deployment, your API will be available at:
+- Base URL: `https://your-project-name.vercel.app`
+- Health Check: `GET /`
+- Auth Routes: `POST /api/auth/register`, `POST /api/auth/login`, etc.
+- Message Routes: `GET /api/message`, `POST /api/message`, etc.
 
 ---
 

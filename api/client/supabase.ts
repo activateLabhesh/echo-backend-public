@@ -1,4 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 if (!process.env.SUPABASE_URL) {
   throw new Error('Missing SUPABASE_URL environment variable');
@@ -34,13 +37,14 @@ export const supabaseAdmin = createClient(
   }
 );
 
-const testConnection = async () => {
+// Optional: Test connection function (call this when needed, not on import)
+export const testConnection = async () => {
   try {
     await supabase.from('users').select('count').single();
     console.log('✅ Successfully connected to Supabase database');
+    return true;
   } catch (error: unknown) {
     console.error('❌ Failed to connect to Supabase database:', error instanceof Error ? error.message : 'Unknown error');
+    return false;
   }
-};
-
-testConnection(); 
+}; 

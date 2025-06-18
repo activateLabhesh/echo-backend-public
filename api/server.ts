@@ -1,34 +1,31 @@
 import express, { Request, Response } from 'express';
-import dotenv from 'dotenv';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import authRoutes from './routes/auth';
 import messageRoutes from './routes/message';
-import './client/supabase';
-import { checkBucketConnection } from './lib/storage';
-import {rateLimiter} from './middleware/rateLimiter';
-import { spamProtection } from './middleware/spamProtection';
-
-dotenv.config();
+import profileRoutes from './routes/profile';
 
 const app = express();
+
+// Middleware
 app.use(express.json());
 app.use(cookieParser());
-app.use(cors());
+app.use(cors({
+  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+  credentials: true
+}));
 
+// Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/message', messageRoutes);
+app.use('/api/profile', profileRoutes);
 
+// Health check endpoint
 app.get('/', (_req: Request, res: Response) => {
-  res.send('Hello from echo-backend!');
+  res.json({ message: 'Hello from echo-backend!', status: 'healthy' });
 });
-
-app.use('/api/auth',rateLimiter,authRoutes);
-app.use('/api/message', messages);
-app.use('/api/profiles', profileRoutes);
-checkBucketConnection().catch(console.error);
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`✅ Local server running at http://localhost:${PORT}`);
-});
+}); 
