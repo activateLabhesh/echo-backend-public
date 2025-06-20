@@ -1,11 +1,11 @@
 {
     "name": "echo-backend",
     "version": "1.0.0",
-    "main": "api/server.ts",
+    "main": "src/server.ts",
     "scripts": {
         "start": "node dist/server.js",
         "build": "tsc",
-        "dev": "ts-node api/server.ts",
+        "dev": "ts-node src/server.ts",
         "vercel-build": "tsc",
         "docker:build": "docker build -t echo-backend .",
         "docker:run": "docker run -p 5000:5000 --env-file .env echo-backend",
