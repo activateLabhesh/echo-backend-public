@@ -1,5 +1,8 @@
-import express, { Request, Response } from 'express';
 import dotenv from 'dotenv';
+dotenv.config();
+
+import express, { Request, Response } from 'express';
+import serverless from 'serverless-http';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import authRoutes from './routes/auth';
@@ -10,7 +13,6 @@ import serverroutes from './routes/servers';
 import roleroutes from './routes/roles';
 import { rateLimiter } from './middleware/rateLimiter';
 
-dotenv.config();
 
 const app = express();
 
