@@ -60,17 +60,17 @@ export const updateProfile = async (req: AuthenticatedRequest, res: Response) =>
   res.status(200).json({ message: 'Profile updated', user: data?.[0] });
 };
 
-export const updateStatus = async (req: AuthenticatedRequest, res: Response) => {
+export const updateStatus = async (req: AuthenticatedRequest, res: Response): Promise <void> => {
   const email = req.userEmail;
   if (!email) {
     res.status(400).json({ error: 'User email not found in request' });
-    return;
+    return
   }
 
   const { status } = req.body;
   if (!status) {
     res.status(400).json({ error: 'Status is required' });
-    return;
+    return 
   }
 
   const { data, error } = await supabase
@@ -80,8 +80,8 @@ export const updateStatus = async (req: AuthenticatedRequest, res: Response) => 
     .select();
 
   if (error) {
-    res.status(500).json({ error: error.message });
-    return;
+   res.status(500).json({ error: error.message });
+   return 
   }
 
   res.status(200).json({ message: 'Status updated', user: data?.[0] });

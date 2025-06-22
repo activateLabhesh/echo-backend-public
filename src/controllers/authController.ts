@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import {supabase,supabaseAdmin} from '../client/supabase'
+import jwt from 'jsonwebtoken';
 
 const cookieOptions = {
   httpOnly: true,
@@ -55,7 +56,24 @@ export const register = async (req: Request, res: Response): Promise <void> => {
 
 // login route
 export const login = async (req: Request, res: Response):Promise <void> => {
-  const { email, password } = req.body;
+  const { identifier, password } = req.body;
+
+  let email =identifier;
+  //check if identifier is not email, then it is username. search database for that username and extract email from it
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier)) {
+    const { data, error } = await supabaseAdmin
+      .from('User')
+      .select('email')
+      .eq('username', identifier)
+      .single();
+
+    if (error || !data) {
+      res.status(400).json({ message: 'Invalid username or user not found' });
+      return;
+    }
+
+    email = data.email;
+  }
 
   const { data, error } = await supabase.auth.signInWithPassword({
     email,
@@ -121,4 +139,63 @@ export const logout = async (req: Request, res: Response): Promise<void> => {
   } catch (err) {
     res.status(500).json({ message: 'Logout failed', error: (err as Error).message });
   }
+};
+
+//send reset password link
+export const sendResetPasswordEmail = async (req: Request, res: Response):Promise<void> => {
+  const { email } = req.body;
+
+  if (!email) {
+    res.status(400).json({ message: 'Email is required to reset password' });
+    return
+  }
+
+  const { error } = await supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: `${process.env.FRONTEND_URL}/reset-password`, 
+  });
+
+  if (error) {
+    res.status(400).json({ message: error.message });
+    return
+  }
+
+  res.status(200).json({ message: 'Password reset email sent' });
+  return
+};
+
+//update password 
+export const updatePassword = async (req: Request, res: Response):Promise<void> => {
+  const authHeader = req.headers['authorization'];
+  const access_token = authHeader?.split(' ')[1];
+  const { new_password } = req.body;
+
+  if (!access_token || !new_password) {
+    res.status(400).json({ message: 'Access token and new password are required' });
+    return
+  }
+
+  //extract user id from the token
+  let userId: string;
+  try {
+    const decoded: any = jwt.decode(access_token);
+    userId = decoded.sub;
+  } catch (err) {
+    res.status(400).json({ message: 'Invalid access token' });
+    return;
+  }
+
+  //update passwrd using admin 
+  const { data, error } = await supabaseAdmin.auth.admin.updateUserById(userId, {
+    password: new_password,
+  });
+
+  // console.log('Admin API response:', { data, error });
+  
+  if (error) {
+    res.status(400).json({ message: error.message });
+    return
+  }
+
+  res.status(200).json({ message: 'Password updated successfully' });
+  return
 };
