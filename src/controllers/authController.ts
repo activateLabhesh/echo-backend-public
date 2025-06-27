@@ -21,6 +21,28 @@ export const register = async (req: Request, res: Response): Promise <void> => {
   const { email, password ,username } = req.body;
   console.log('Registering user:', { email, password ,username});
 
+  const { data: existingEmail } = await supabaseAdmin
+  .from('users')
+  .select('id')
+  .eq('email', email)
+  .maybeSingle();
+
+  if (existingEmail) {
+  res.status(409).json({ message: 'User already registered' });
+  return
+  }
+
+  const { data: existingUsername } = await supabaseAdmin
+  .from('users')
+  .select('id')
+  .eq('username', username)
+  .maybeSingle();
+
+  if (existingUsername) {
+  res.status(409).json({ message: 'Username already taken' });
+  return
+  }
+
   const { data: signUpData, error } = await supabase.auth.signUp({
     email,
     password,
@@ -33,14 +55,13 @@ export const register = async (req: Request, res: Response): Promise <void> => {
   const userId = signUpData.user.id;
 
   const { error: insertError } = await supabaseAdmin
-  .from('User')
+  .from('users')
   .insert([
     {
       id: userId,
       email,
       username,
-      passwordHash: '',
-      avatarUrl: null,
+      avatar_url: null,
       status: 'offline',
     },
   ]);
@@ -62,7 +83,7 @@ export const login = async (req: Request, res: Response):Promise <void> => {
   //check if identifier is not email, then it is username. search database for that username and extract email from it
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier)) {
     const { data, error } = await supabaseAdmin
-      .from('User')
+      .from('users')
       .select('email')
       .eq('username', identifier)
       .single();
