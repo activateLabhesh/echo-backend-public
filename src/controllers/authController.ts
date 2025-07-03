@@ -63,6 +63,7 @@ export const register = async (req: Request, res: Response): Promise <void> => {
       username,
       avatar_url: null,
       status: 'offline',
+      bio:'', //present in supabase
     },
   ]);
 
@@ -78,6 +79,7 @@ export const register = async (req: Request, res: Response): Promise <void> => {
 // login route
 export const login = async (req: Request, res: Response):Promise <void> => {
   const { identifier, password } = req.body;
+  const isMobileApp = req.headers['x-client-type'] === 'Mobile'; //checks where the request is from
 
   let email =identifier;
   //check if identifier is not email, then it is username. search database for that username and extract email from it
@@ -107,19 +109,37 @@ export const login = async (req: Request, res: Response):Promise <void> => {
   }
 
   const { access_token, refresh_token, user } = data.session;
-
-  res.cookie('access_token', access_token, cookieOptions);
-  res.cookie('refresh_token', refresh_token, {
-    ...cookieOptions,
-    maxAge: 60 * 60 * 24 * 30,
-  });
-
-  res.status(200).json({ message: 'Logged in', user });
+  console.log("login", data.session.expires_in);
+  if(isMobileApp){
+    res.status(200).json({
+      message : "Logged In",
+      user: user,
+      accessToken:access_token,
+      refreshToken:refresh_token,
+      expiresIn: data.session.expires_in, ///////////////////////////////////////////////////////////////////////////
+    })
+  } else{
+    res.cookie('access_token', access_token, cookieOptions);
+    res.cookie('refresh_token', refresh_token, {
+      ...cookieOptions,
+      maxAge: 60 * 60 * 24 * 30,
+    });
+    console.log("Logged in the user.");
+    res.status(200).json({ message: 'Logged in', user});
+  }
 };
 
 //refresh tokens
 export const refreshToken = async (req: Request, res: Response): Promise <void> => {
-  const refresh_token = req.cookies.refresh_token;
+  const isMobileApp = req.headers['x-client-type'] === 'Mobile';
+
+  let refresh_token: string | undefined;
+
+  if (isMobileApp) {
+    refresh_token = req.body.refresh_token;
+  } else {
+    refresh_token = req.cookies.refresh_token;
+  }
 
   if (!refresh_token) {
     res.status(401).json({ message: 'Refresh token missing' });
@@ -133,19 +153,33 @@ export const refreshToken = async (req: Request, res: Response): Promise <void> 
     return
   }
 
-  const { access_token, refresh_token: newRefreshToken } = data.session;
-
-  res.cookie('access_token', access_token, cookieOptions);
-  res.cookie('refresh_token', newRefreshToken, {
-    ...cookieOptions,
-    maxAge: 60 * 60 * 24 * 30,
-  });
-
-  res.status(200).json({ message: 'Token refreshed' });
+  const { access_token, refresh_token: newRefreshToken, user } = data.session;
+  console.log("refresh", data.session.expires_in);
+  if (isMobileApp) {
+    res.status(200).json({
+      message: 'Token refreshed',
+      accessToken: access_token,
+      refreshToken: newRefreshToken,
+      user: user,
+      expiresIn: data.session.expires_in ///////////////////////////////////////////////////////
+    });
+  } else {
+    res.cookie('access_token', access_token, cookieOptions);
+    res.cookie('refresh_token', newRefreshToken, {
+      ...cookieOptions,
+      maxAge: 60 * 60 * 24 * 30,
+    });
+    res.status(200).json({ message: 'Token refreshed' });
+  }
 };
 
 //logout route
 export const logout = async (req: Request, res: Response): Promise<void> => {
+
+  const isMobileApp = req.headers['X-Client-Type'] === 'mobile-app';
+  if(isMobileApp){
+    res.status(200).json({ message: 'Logged out successfully' });
+  }
   const accessToken = req.cookies.access_token;
 
   if (!accessToken) {
@@ -219,4 +253,37 @@ export const updatePassword = async (req: Request, res: Response):Promise<void> 
 
   res.status(200).json({ message: 'Password updated successfully' });
   return
+};
+
+export const authorize = async (req: Request, res: Response): Promise<void> => {
+  const authHeader = req.headers['authorization'];
+  const accessToken = authHeader?.split(' ')[1];
+
+  if (!accessToken) {
+    res.status(401).json({ message: 'Access token missing' });
+    return;
+  }
+
+  try {
+    const { data: userData, error } = await supabase.auth.getUser(accessToken);
+
+    if (error || !userData.user) {
+      console.warn('Authorization failed:', error?.message || 'No user data found.');
+      res.status(401).json({ message: 'Unauthorized: Invalid or expired access token.' });
+      return;
+    }
+
+    res.status(200).json({
+      authenticated: true,
+      user: {
+        id: userData.user.id,
+        email: userData.user.email,
+      }
+    });
+
+  } catch (err: any) {
+    console.error('Error in authorize route:', err.message || err);
+    // Catch any unexpected errors during token processing
+    res.status(500).json({ message: 'Internal server error during authorization.' });
+  }
 };
