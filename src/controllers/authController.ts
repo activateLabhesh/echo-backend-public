@@ -18,8 +18,8 @@ export const testRoute = (_req: Request, res: Response) => {
 
 //register route
 export const register = async (req: Request, res: Response): Promise <void> => {
-  const { email, password ,username } = req.body;
-  console.log('Registering user:', { email, password ,username});
+  const { email, password ,username, fullname, date_of_birth} = req.body;
+  console.log('Registering user:', { email, password ,username,fullname,date_of_birth});
 
   const { data: existingEmail } = await supabaseAdmin
   .from('users')
@@ -61,6 +61,8 @@ export const register = async (req: Request, res: Response): Promise <void> => {
       id: userId,
       email,
       username,
+      fullname,
+      date_of_birth,
       avatar_url: null,
       status: 'offline',
       bio:'', //present in supabase
@@ -109,11 +111,24 @@ export const login = async (req: Request, res: Response):Promise <void> => {
   }
 
   const { access_token, refresh_token, user } = data.session;
+
+  const { data: userDetails, error: fetchError } = await supabaseAdmin
+  .from('users')
+  .select('id, email, username, fullname, avatar_url, bio, date_of_birth, status,created_at')
+  .eq('id', user.id)
+  .maybeSingle();
+
+if (fetchError || !userDetails) {
+  res.status(500).json({ message: 'Failed to fetch user profile details' });
+  return;
+}
+
+
   console.log("login", data.session.expires_in);
   if(isMobileApp){
     res.status(200).json({
       message : "Logged In",
-      user: user,
+      user: userDetails,
       accessToken:access_token,
       refreshToken:refresh_token,
       expiresIn: data.session.expires_in, ///////////////////////////////////////////////////////////////////////////
@@ -125,7 +140,7 @@ export const login = async (req: Request, res: Response):Promise <void> => {
       maxAge: 60 * 60 * 24 * 30,
     });
     console.log("Logged in the user.");
-    res.status(200).json({ message: 'Logged in', user});
+    res.status(200).json({ message: 'Logged in', user: userDetails});
   }
 };
 
