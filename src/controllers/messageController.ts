@@ -238,8 +238,8 @@ interface LastMessage {
 
 interface DmThread {
     id: string;
-    otherUser: Profile;
-    lastMessage: LastMessage | null;
+    user1_id:string;
+    user2_id:string;
 }
 
 /**
@@ -247,6 +247,8 @@ interface DmThread {
  *
  * This function is useful for features like a global inbox or notification center.
  */
+
+/*
 export const getDmMessages = async (req: Request, res: Response): Promise<void> => {
     try {
         const { userId } = req.params;
@@ -286,5 +288,77 @@ export const getDmMessages = async (req: Request, res: Response): Promise<void> 
         console.error('Server error in getAllReceivedDmMessages:', err);
         res.status(500).json({ error: 'Server error.' });
         return 
+    }
+};
+*/
+
+
+export const getDmMessages = async(req: Request, res: Response):Promise<void>=>{
+    try {
+        const  user_id  = req.params.userId;
+
+        if(!user_id || typeof user_id !== 'string'){
+            res.status(400).json({ error: 'user_id is required as a parameter. use :userId/getDms' });
+            return;
+        }
+
+        // Step 1: Find all DM threads where the user is a participant
+        const { data: threads, error: threadError } = await supabase
+            .from('dm_threads')
+            .select('id,user1_id,user2_id')
+            .or(`user1_id.eq.${user_id},user2_id.eq.${user_id}`) as unknown as { data: DmThread[]; error: any };
+
+        if(threadError){
+            console.log('Error fetching user threads:', threadError);
+            res.status(500).json({ error: 'Failed to fetch user threads.' });
+            return;
+        }
+
+        if(!threads || threads.length === 0){
+            //user is in no dm threads
+            res.status(200).json({ threads: [] });
+            return;
+        }
+
+        // For each thread , fetch the last 15 messages.
+        const groupedMessages = await Promise.all(
+            threads.map(async (thread) => {
+                //kinda iterating through all the threads , getting the messages and other user details for each thread.
+                const otherUserId = thread.user1_id === user_id ? thread.user2_id : thread.user1_id;
+
+                // Fetch other user’s profile info
+                const { data: otherUserData, error: userError } = await supabase
+                    .from('users') 
+                    .select('id, username , avatar_url')
+                    .eq('id', otherUserId)
+                    .single();
+
+                if (userError) {
+                    console.log(`Error fetching other user info for thread ${thread.id}:`, userError);
+                }
+                
+                const { data: messages, error: msgError } = await supabase
+                    .from('dm_messages')
+                    .select('*')
+                    .eq('thread_id', thread.id)
+                    .order('timestamp', { ascending: false })//for descending bruh
+                    .limit(15);//15 messages
+
+                if(msgError){
+                    console.log(`Error fetching messages for thread ${thread.id}:`, msgError);
+                    return { thread_id: thread.id, messages: [] };
+                }
+                return {
+                    thread_id: thread.id,
+                    messages,
+                    other_user: otherUserData || null
+                };
+            })
+        );
+
+        res.status(200).json({ threads: groupedMessages });
+    } catch (err) {
+        console.error('Unexpected server error:', err);
+        res.status(500).json({ error: 'Internal server error' });
     }
 };
