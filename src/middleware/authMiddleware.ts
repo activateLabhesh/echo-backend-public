@@ -1,24 +1,23 @@
-//checks for valid token under header or cookies 
-
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret';
 
+interface JwtPayload {
+  sub: string; // The user ID from the token
+  email?: string;
+}
+
 export interface AuthenticatedRequest extends Request {
-  user?: { userId: string; email?: string };
+  user?: JwtPayload;
   userEmail?: string;
 }
 
 export const authenticate = (req: Request, res: Response, next: NextFunction): void => {
-  let token: string| undefined;
+  let token: string | undefined;
 
-  const authHeader = req.headers.authorization;
-  if (authHeader && authHeader.startsWith('Bearer ')){
-      token = authHeader.split(' ')[1];
-  }
-  else if(req.cookies &&req.cookies.access_token){
-      token = req.cookies.access_token;
+  if (req.cookies && req.cookies.access_token) {
+    token = req.cookies.access_token;
   }
   
   if (!token) {
@@ -27,7 +26,8 @@ export const authenticate = (req: Request, res: Response, next: NextFunction): v
   }
   
   try {
-    const payload = jwt.verify(token, JWT_SECRET) as { userId: string; email?: string };
+    const payload = jwt.verify(token, JWT_SECRET) as JwtPayload;
+    
     (req as AuthenticatedRequest).user = payload;
     (req as AuthenticatedRequest).userEmail = payload.email;
     next();

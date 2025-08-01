@@ -65,7 +65,7 @@ app.use('/api/auth', rateLimiter, authRoutes);
 app.use('/api/message', messageRoutes);
 app.use('/api/profile', profileRoutes);
 app.use('/api/newserver',serverroutes);
-app.use('/api/user',channelroutes);
+app.use('/api/channel',channelroutes);
 app.use('/api/roles',roleroutes);
 app.use('/api/user',userRoutes);
 app.use('/api/contact',contactroutes);

@@ -111,40 +111,55 @@ export const screation = async (req: AuthenticatedRequest, res: Response): Promi
     return 
   }
 };
-export const getServers = async (req: Request, res: Response):Promise<void> => {
-    try {
-        // 'servers' table records 
-        const { data: servers, error } = await supabase
-            .from('servers')
-            .select('name,icon_url,id'
-            );
 
-        if (error) {
-            //Supabase returns an error
-            throw new Error(`Database error: ${error.message}`);
-        }
+export const getServers = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    console.log(req.user);
+      const userId = req.user?.sub;
 
-        // no server exist
-        if (!servers || servers.length === 0) {
-            res.status(200).json([]);
-            return;
-        }
+      if (!userId) {
+          res.status(401).json({ error: 'Not authenticated or user ID missing' });
+          return;
+      }
 
-        //Success.
-        res.status(200).json(servers);
-        return;
-    } catch (error) {
-        const err = error as Error;
-        console.error('Error in getServers controller:', err.message);
-        res.status(500).json({ error: 'Internal server error.', details: err.message });
-    }
+      const { data: memberEntries, error: memberError } = await supabase
+          .from('server_members')
+          .select('server_id')
+          .eq('user_id', userId); 
+
+      if (memberError) {
+          throw new Error(`Database error fetching memberships: ${memberError.message}`);
+      }
+
+      if (!memberEntries || memberEntries.length === 0) {
+          res.status(200).json([]);
+          return;
+      }
+
+      const serverIds = memberEntries.map(entry => entry.server_id);
+
+      const { data: servers, error: serverError } = await supabase
+          .from('servers')
+          .select('name, icon_url, id')
+          .in('id', serverIds);
+
+      if (serverError) {
+          throw new Error(`Database error fetching servers: ${serverError.message}`);
+      }
+
+      res.status(200).json(servers || []);
+
+  } catch (error) {
+      const err = error as Error;
+      console.error('Error in getServers controller:', err.message);
+      res.status(500).json({ error: 'Internal server error.', details: err.message });
+  }
 };
 
 export const joinServer = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
     const { serverId } = req.body;
     const email_Id = req.user?.email;
 
-    // --- Input Validation ---
     if (!serverId) {
         res.status(400).json({ error: 'Server ID is required in the request body.' });
         return;
@@ -155,7 +170,6 @@ export const joinServer = async (req: AuthenticatedRequest, res: Response): Prom
     }
 
     try {
-        // --- 1. Get User ID from email ---
         const { data: userData, error: userError } = await supabase
             .from('users')
             .select('id')
@@ -168,26 +182,20 @@ export const joinServer = async (req: AuthenticatedRequest, res: Response): Prom
         }
         const requestingUserId = userData.id;
 
-        // --- 2. Call RPC for Secure, Transactional Join ---
-        // This single function handles checking for existing membership,
-        // adding the user, and assigning the 'Member' role.
         const { data: newMember, error: rpcError } = await supabase.rpc('join_server_and_assign_member_role', {
             p_server_id: serverId,
             p_user_id: requestingUserId,
         });
 
         if (rpcError) {
-            // The RPC will error if the user is already a member or if the 'Member' role doesn't exist.
             console.error('RPC `join_server_and_assign_member_role` error:', rpcError);
-            // Return a 409 Conflict for "already a member" or other issues.
             res.status(409).json({ message: 'Failed to join server.', details: rpcError.message });
             return 
           }
 
-        // --- Success Response ---
         res.status(201).json({
             message: 'Successfully joined the server and assigned Member role.',
-            data: newMember?.[0] // The RPC returns an array
+            data: newMember?.[0] 
         });
 
     } catch (error) {
