@@ -1,5 +1,6 @@
 import type { Request, Response } from "express";
 import { AuthenticatedRequest } from "../middleware/authMiddleware";
+import { saveMessage } from '../lib/messageServices';
 import { supabase } from '../client/supabase';
 import {v4} from 'uuid';
 
@@ -111,66 +112,62 @@ export const dmMessagePostController = async (req:Request , res:Response):Promis
 
 
 
-export const messagePostController = async (req:Request, res:Response):Promise<any>=>{
-    
-    try{
-        const id = v4();
+export const messagePostController = async (req:Request, res:Response):Promise<any> => {
+    try {
+        const id = v4(); 
         const {content, channel_id, sender_id, reply_to} = req.body;
-        if(!channel_id){
+        
+        if (!channel_id) {
             return res.status(400).json({'error':'No channelId received.'});
         } 
-        if(!sender_id){
+        if (!sender_id) {
             return res.status(400).json({'error':'No senderId received.'});
         }
 
         let media_url:string | null = null;
+        
+        if (req.file) {
+            const fileExt = req.file.originalname.split('.').pop();
+            const fileName = `${id}.${fileExt}`;
 
-    
-        if (req.file){
-            const fileExt = req.file.originalname.split('.').pop();//gets the extension of the file
-            const fileName = `${id}.${fileExt}`;//filename to store as , should not conflict.
-
-            const {data, error: uploadError}= await supabase.storage
+            const { data, error: uploadError } = await supabase.storage
                 .from('attachments')
                 .upload(fileName, req.file.buffer, {
-                contentType: req.file.mimetype,
-                upsert: true,
-            });
+                    contentType: req.file.mimetype,
+                    upsert: true,
+                });
 
-            if(uploadError){
+            if (uploadError) {
                 console.error(uploadError);
-                return res.status(500).json({'error':'Server error'});
+                return res.status(500).json({'error':'Server error during file upload'});
             }
 
-            // Get public URL
             const { data: publicUrlData } = supabase.storage.from('attachments').getPublicUrl(fileName);
             media_url = publicUrlData.publicUrl;
-            console.log(media_url);
         }
         
-         
-        const { error: insertError } = await supabase.from('messages').insert({
-            id,
+        // 1. calling shared service to save the message data.
+        const savedMessage = await saveMessage({
             content,
-            media_url,
-            is_edited: false,
             channel_id,
             sender_id,
-            reply_to: reply_to || null,
+            media_url, // Pass the file URL if it exists
         });
 
-        if (insertError) {
-            console.error(insertError);
-            return res.status(500).json({error:'Server error'});
-        }
+        // 3. Get the socket.io instance and broadcast the new message.
+        // in main server file: app.set('socketio', io);
+        const io = req.app.get('socketio');
+        io.to(channel_id).emit('new_message', savedMessage);
         
+        console.log(`Message with media from ${sender_id} was broadcasted to room ${channel_id}`);
+
+        // 4. Send a success response back to the client that made the upload request.
         return res.status(200).json({
-            msg:'Message saved successfully',
-            message_id : id,
-            media_url : media_url
+            msg: 'Message sent successfully',
+            message: savedMessage,
         });
-    }
-    catch(error:any){
+        
+    } catch(error:any) {
         console.error(error);
         return res.status(500).json({error:'Server error'});
     }

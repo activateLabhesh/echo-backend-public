@@ -32,6 +32,7 @@ const io = new Server(httpServer, {
   }
 });
 
+app.set('socketio', io);
 // Setup sockets
 setupChatSocket(io);
 setupVoiceSocket(io);
