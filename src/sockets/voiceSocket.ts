@@ -1,33 +1,39 @@
-import { Server, Socket } from 'socket.io';
+// src/sockets/voiceSocket.ts
+import { Server } from 'socket.io';
 
+export function setupVoiceSocket(io: Server) {
+  const channelUsers = new Map<string, string[]>();
 
-
-console.log('Setting up voice socket');
-export const setupVoiceSocket = (io: Server) => {
-  io.on('connection', (socket: Socket) => {
-    console.log('User connected for voice:', socket.id);
-
+  io.on('connection', (socket) => {
     socket.on('join_voice_channel', (channelId: string) => {
       socket.join(channelId);
-      console.log(`User ${socket.id} joined voice channel ${channelId}`);
-      socket.to(channelId).emit('user-joined', socket.id);
+      const users = channelUsers.get(channelId) || [];
+      users.forEach(userId => {
+        socket.to(userId).emit('user-joined', socket.id);
+      });
+      channelUsers.set(channelId, [...users, socket.id]);
     });
 
-    socket.on('webrtc-offer', ({ to, sdp }: { to: string; sdp: any }) => {
+    socket.on('webrtc-offer', ({ to, sdp }) => {
       io.to(to).emit('webrtc-offer', { from: socket.id, sdp });
     });
 
-    socket.on('webrtc-answer', ({ to, sdp }: { to: string; sdp: any }) => {
+    socket.on('webrtc-answer', ({ to, sdp }) => {
       io.to(to).emit('webrtc-answer', { from: socket.id, sdp });
     });
 
-    socket.on('webrtc-ice-candidate', ({ to, candidate }: { to: string; candidate: any }) => {
+    socket.on('webrtc-ice-candidate', ({ to, candidate }) => {
       io.to(to).emit('webrtc-ice-candidate', { from: socket.id, candidate });
     });
 
     socket.on('disconnect', () => {
-      console.log('User disconnected from voice:', socket.id);
-      io.emit('user-disconnected', socket.id);
+      for (const [channelId, users] of channelUsers.entries()) {
+        const updated = users.filter(id => id !== socket.id);
+        channelUsers.set(channelId, updated);
+        users.forEach(userId => {
+          io.to(userId).emit('user-disconnected', socket.id);
+        });
+      }
     });
   });
-};
+}
