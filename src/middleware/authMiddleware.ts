@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret';
+const JWT_SECRET = process.env.JWT_SECRET!;
 
 interface JwtPayload {
   sub: string; // The user ID from the token
@@ -27,6 +27,11 @@ export const authenticate = (req: Request, res: Response, next: NextFunction): v
   
   try {
     const payload = jwt.verify(token, JWT_SECRET) as JwtPayload;
+    
+    if (!payload.email) {
+      res.status(401).json({ message: 'Authentication failed: Token is missing required information.' });
+      return;
+    }
     
     (req as AuthenticatedRequest).user = payload;
     (req as AuthenticatedRequest).userEmail = payload.email;

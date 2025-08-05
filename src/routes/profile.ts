@@ -1,11 +1,13 @@
-import express from 'express';
+import {Router} from 'express';
 import { authenticate } from '../middleware/authMiddleware';
-import { updateProfile, upload, updateStatus } from '../controllers/profileController';
+import { getProfile, updateProfile, updateStatus } from '../controllers/profileController';
+import { busboyMiddleware } from '../middleware/busboyMiddleware';
 
-const router = express.Router();
 
-router.put('/update', authenticate, upload.single('avatar'), updateProfile);
+const router = Router();
 
-router.put('/update-status', authenticate, updateStatus);
+router.get('/getProfile', authenticate, getProfile);
+router.patch('/updateProfile', authenticate, busboyMiddleware, updateProfile);
+router.patch('/updatestatus', authenticate, updateStatus);
 
 export default router;

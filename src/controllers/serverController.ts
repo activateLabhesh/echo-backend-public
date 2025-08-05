@@ -1,6 +1,7 @@
 import { Request,Response } from 'express';
 import { supabase } from '../client/supabase';
 import { AuthenticatedRequest } from '../middleware/authMiddleware';
+import { RequestWithBusboy } from '../middleware/busboyMiddleware';
 
 /**
  * Handles the creation of a new server.
@@ -15,7 +16,7 @@ export const screation = async (req: AuthenticatedRequest, res: Response): Promi
   const { name } = req.body;
   const user = req.user;
   const email_Id = user?.email;
-  const file = req.file;
+  const file = (req as RequestWithBusboy).busboyFile;
 
   // --- Input Validation ---
   if (!file) {
