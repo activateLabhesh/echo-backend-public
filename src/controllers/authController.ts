@@ -4,11 +4,12 @@ import jwt from 'jsonwebtoken';
 
 const cookieOptions = {
   httpOnly: true,
-  // secure: process.env.NODE_ENV === 'production',
-  sameSite: 'lax' as const,
+  secure: true,
+  sameSite: 'none' as const,
   path: '/',
-  maxAge: 60 * 60 * 24 * 7, 
+  maxAge: 60 * 60 * 24 * 7,
 };
+
 
 //test route
 export const testRoute = (_req: Request, res: Response) => {
