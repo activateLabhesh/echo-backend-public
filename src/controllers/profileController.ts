@@ -165,3 +165,112 @@ export const getProfile = async(req: AuthenticatedRequest, res: Response): Promi
     res.status(500).json({ message: 'An unexpected internal server error occurred.' });
   }
 };
+
+export const deleteProfile = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  if (!req.user) {
+    res.status(401).json({ message: 'Authentication error, user not found on request.' });
+    return;
+  }
+
+  const userId = req.user.sub;
+  const userEmail = req.userEmail;
+  const { password } = req.body;
+
+  if (!password) {
+    res.status(400).json({ message: 'Password is required to delete your profile.' });
+    return;
+  }
+
+  try {
+    const {error : authError} = await supabase.auth.signInWithPassword({
+      email: userEmail || '',
+      password: password
+    });
+
+    if (authError) {
+      res.status(401).json({ message: 'Authentication failed. Please check your password.' });
+      return;
+    }
+
+    //if password is correct, proceed to delete the user profile
+    const { error: deleteError } = await supabase
+      .from('users')
+      .delete()
+      .eq('id', userId);
+
+    if (deleteError) {
+      console.error('Error deleting user profile:', deleteError.message);
+      res.status(500).json({ message: 'An internal server error occurred.' });
+      return;
+    }
+
+    res.status(200).json({ message: 'Profile deleted successfully' });
+
+  } catch (error) {
+    console.error('Unexpected error in deleteProfile:', error);
+    res.status(500).json({ message: 'An unexpected internal server error occurred.' });
+  }
+};
+
+export const removeAvatar = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  if (!req.user) {
+    res.status(401).json({ message: 'Authentication error, user not found on request.' });
+    return;
+  }
+
+  const userId = req.user.sub;
+
+  try {
+    const { data: currentUser, error: fetchError } = await supabase
+      .from('users')
+      .select('avatar_url')
+      .eq('id', userId)
+      .single();
+
+    if (fetchError || !currentUser) {
+      res.status(404).json({ message: 'User not found.' });
+      return;
+    }
+
+    const oldAvatarUrl = currentUser.avatar_url;
+    if (!oldAvatarUrl) {
+      res.status(400).json({ message: 'No avatar to delete.' });
+      return;
+    }
+
+    const oldFileName = oldAvatarUrl.split('/').pop(); //extract the file name from the URL
+
+    if (!oldFileName) {
+      res.status(400).json({ message: 'Invalid avatar URL.' });
+      return;
+    }
+
+    if (oldFileName) {
+      console.log('Removing avatar file:', oldFileName);
+      const { error: removeError } = await supabase.storage.from('avatars').remove([oldFileName]);
+      if (removeError) {
+        console.error('Error deleting avatar:', removeError.message);
+        res.status(500).json({ message: 'Failed to delete avatar file from storage.' });
+        return;
+      }
+    }
+
+    // update the user's avatar_url to null if storage deletion is successful
+    const { error: updateError } = await supabase
+      .from('users')
+      .update({ avatar_url: null })
+      .eq('id', userId);
+
+    if (updateError) {
+      console.error('Error updating user profile:', updateError.message);
+      res.status(500).json({ message: 'Avatar file deleted but failed to update database.' });
+      return;
+    }
+
+    res.status(200).json({ message: 'Avatar deleted successfully' });
+
+  } catch (error) {
+    console.error('Unexpected error in deleteAvatar:', error);
+    res.status(500).json({ message: 'An unexpected internal server error occurred.' });
+  }
+}
