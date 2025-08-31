@@ -34,6 +34,8 @@ const io = new Server(httpServer, {
   }
 });
 
+app.set('socketio', io);
+
 setupChatSocket(io);
 setupVoiceSocket(io);
 subscribeToChannel(io);
@@ -52,6 +54,8 @@ app.use(cors({
   credentials: true
 }));
 
+
+app.set('socketio', io);
 // Routes with middleware
 app.use('/api/auth', rateLimiter, authRoutes);
 app.use('/api/message', messageRoutes);
@@ -69,5 +73,5 @@ app.get('/', (_req: Request, res: Response) => {
 
 const PORT = process.env.PORT || 5000;
 httpServer.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
