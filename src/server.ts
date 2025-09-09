@@ -2,7 +2,6 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 import express, { Request, Response } from 'express';
-import serverless from 'serverless-http';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import { Server } from 'socket.io';
@@ -32,7 +31,6 @@ const io = new Server(httpServer, {
 });
 
 app.set('socketio', io);
-// Setup sockets
 setupChatSocket(io);
 setupVoiceSocket(io);
 subscribeToChannel(io);
