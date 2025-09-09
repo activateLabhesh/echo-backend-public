@@ -23,35 +23,29 @@ import { setupVoiceSocket } from './sockets/voiceSocket';
 const app = express();
 const httpServer = http.createServer(app);
 
-// Updated the Socket.IO CORS configuration to allow multiple origins.
 const io = new Server(httpServer, {
   cors: {
-    origin: [
-        "http://localhost:3000"
-    ],
-    methods: ["GET", "POST"],
-    credentials: true
+    origin: "http://localhost:3000",
+    methods: ["GET", "POST"]
   }
 });
 
+app.set('socketio', io);
+// Setup sockets
 setupChatSocket(io);
 setupVoiceSocket(io);
 subscribeToChannel(io);
 
-
-
 // Middleware
 app.use(express.json());
 app.use(cookieParser());
-// This CORS config is for your regular HTTP (REST API) routes
 app.use(cors({
-  origin: [
-      "http://localhost:3000",
-      "https://your-frontend-url.onrender.com" // IMPORTANT: Also add your frontend URL here
-  ],
+  origin: 'http://localhost:3000',
   credentials: true
 }));
 
+
+app.set('socketio', io);
 // Routes with middleware
 app.use('/api/auth', rateLimiter, authRoutes);
 app.use('/api/message', messageRoutes);
@@ -61,7 +55,6 @@ app.use('/api/channel', channelroutes);
 app.use('/api/roles', roleroutes);
 app.use('/api/contact', contactroutes);
 
-
 // Health check endpoint
 app.get('/', (_req: Request, res: Response) => {
   res.json({ message: 'Hello from echo-backend!', status: 'healthy' });
@@ -69,5 +62,5 @@ app.get('/', (_req: Request, res: Response) => {
 
 const PORT = process.env.PORT || 5000;
 httpServer.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
