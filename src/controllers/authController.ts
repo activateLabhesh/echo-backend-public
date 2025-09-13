@@ -125,7 +125,7 @@ if (fetchError || !userDetails) {
 }
 
 
-  console.log("login", data.session.expires_in);
+  // console.log("login", data.session.expires_in);
   if(isMobileApp){
     res.status(200).json({
       message : "Logged In",

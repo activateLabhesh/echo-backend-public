@@ -178,59 +178,55 @@ export const messagePostController = async (req:Request, res:Response):Promise<a
     if the offset is 1 , then we send the next 15 messages and so on */
 export const messageGetController = async (req:Request, res:Response):Promise<any>=>{
     try{
-        const channel_id:string = req.query.channel_id as string;
-        const offset:number = parseInt(req.query.offset as string) || 0;
+        const channel_id  = req.query?.channel_id as string;;
+
         /* if no offset is received , then we assume 0 as offset*/
-        const is_dm:boolean = (req.query.is_dm === 'true');
-        
         if(!channel_id){
             return res.status(400).json({msg:'No channelId received'});
         }
-        if(offset < 0){
-            return res.status(400).json({msg:'offset cannot be negative'});
-        }
 
-        const from = offset * 15;
-        const to = from + 14;
-
-        //get appropriate table and column name for the channel/thread.
-        const table:string = (is_dm)?'dm_messages':'messages';
-        const channel:string = (is_dm)?'thread_id':'channel_id';
-
-        /* fetch data*/
+        // Fetch messages
         const { data, error } = await supabase
-        .from(table)
-        .select('*')
-        .eq(channel, channel_id)
-        .order('timestamp', { ascending: false }) //latest messages
-        .range( from, to ); //send 15 messages
+            .from('messages')
+            .select('*')
+            .eq('channel_id', channel_id)
+            .order('timestamp', { ascending: false }); //latest messages
 
         if(error){
             console.error('Error fetching messages:', error);
             return res.status(500).json({msg:'Server Error'});
-        }else{
-            console.log('Fetched messages:', data);
-            return res.status(200).json({data});
         }
+
+        // Fetch sender usernames for all messages
+        const senderIds = data ? Array.from(new Set(data.map((msg:any) => msg.sender_id))) : [];
+        let usersMap = new Map();
+        if(senderIds.length > 0){
+            const { data: usersData, error: usersError } = await supabase
+                .from('users')
+                .select('id, username')
+                .in('id', senderIds);
+            if(usersError){
+                console.error('Error fetching user names:', usersError);
+            } else if(usersData) {
+                usersMap = new Map(usersData.map((user:any) => [user.id, user.username]));
+            }
+        }
+
+        // Attach username to each message
+        const messagesWithUsernames = data ? data.map((msg:any) => ({
+            ...msg,
+            username: usersMap.get(msg.sender_id) || null
+        })) : [];
+
+        console.log('Fetched messages with usernames:', messagesWithUsernames);
+        return res.status(200).json({
+            data: messagesWithUsernames
+        });
     }
     catch(e:any){
         console.log(`Error in GET message : ${e}`);
         return res.status(500).json({'msg':'Server Error'});
     }
-}
-
-
-// Define interfaces for type safety and clarity
-interface Profile {
-    id: string;
-    username: string;
-    avatar_url: string;
-}
-
-interface LastMessage {
-    content: string;
-    created_at: string;
-    sender_id: string;
 }
 
 interface DmThread {
