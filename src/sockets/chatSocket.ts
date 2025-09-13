@@ -28,9 +28,9 @@ export const setupChatSocket = (io: Server) => {
     });
 
 
-    socket.on('send_message', async (data: { channelId: string; senderId: string; message: string }) => {
+    socket.on('send_message', async (data: { channelId: string; senderId: string; content: string }) => {
       // 1. checking the coming data
-      if (!data.channelId || !data.senderId || !data.message) {
+      if (!data.channelId || !data.senderId || !data.content) {
         console.error('Invalid chat message payload:', data);
         socket.emit('message_error', 'Your message is missing required information.');
         return;
@@ -39,7 +39,7 @@ export const setupChatSocket = (io: Server) => {
         // 2. payload from services that we use to save the data..
 
         const savedMessage = await saveMessage({
-          content: data.message,
+          content: data.content,
           channel_id: data.channelId,
           sender_id: data.senderId,
         });
