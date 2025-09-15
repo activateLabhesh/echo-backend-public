@@ -1,67 +1,191 @@
 import { Request, Response } from "express";
-import { supabase } from '../client/supabase'; // Adjust path if necessary
-import { v4 as uuidv4, v4 } from 'uuid';
-import { saveMessage } from "../lib/messageServices";
+import { supabase } from '../client/supabase';
+import { v4 } from 'uuid';
+import { AuthenticatedRequest } from "../middleware/authMiddleware";
+import { getIO, userSocketMap } from "../sockets/chatSocket";
 
-export const dmMessagePostController = async (req: Request, res: Response): Promise<any> => {
+// --- Required for file uploads ---
+// Make sure you have `multer` installed in your project.
+import multer from 'multer';
+
+// --- Type Definitions ---
+type DmMessageBody = {
+    content?: string;
+    sender_id?: string;
+    receiver_id: string;
+    reply_to?: string;
+};
+
+type ChannelMessageBody = {
+    content?: string;
+    sender_id?: string;
+    channel_id: string;
+    reply_to?: string;
+    file?: any;
+};
+
+// Regex for a valid UUID v4
+const uuidV4Regex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+
+// --- UTILITY FUNCTIONS ---
+// These functions are good and will be kept as-is.
+// --- MIME / Extension helpers ---
+const IMAGE_MIME_SET = new Set([
+    'image/jpeg','image/png','image/gif','image/webp','image/bmp','image/svg+xml'
+]);
+
+const ALLOWED_FILE_MIME: Record<string,string> = {
+    // Images
+    'image/jpeg':'jpg','image/png':'png','image/gif':'gif','image/webp':'webp','image/bmp':'bmp','image/svg+xml':'svg',
+    // Text / docs
+    'text/plain':'txt','application/pdf':'pdf','application/msword':'doc','application/vnd.openxmlformats-officedocument.wordprocessingml.document':'docx',
+    'application/vnd.ms-excel':'xls','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':'xlsx',
+    'application/vnd.ms-powerpoint':'ppt','application/vnd.openxmlformats-officedocument.presentationml.presentation':'pptx',
+    'application/json':'json',
+    // Archives (optional - comment out if not desired)
+    'application/zip':'zip','application/x-zip-compressed':'zip',
+};
+
+function extFromMime(mime: string): string | null {
+    return ALLOWED_FILE_MIME[mime] || null;
+}
+function sniffImageMime(buffer: Buffer): { mime: string; ext: string } | null {
+    // ... (Your existing sniffImageMime function content)
+    if (!buffer || buffer.length < 4) return null;
+    const b0 = buffer[0], b1 = buffer[1], b2 = buffer[2], b3 = buffer[3];
+    if (b0 === 0xff && b1 === 0xd8 && b2 === 0xff) return { mime: 'image/jpeg', ext: 'jpg' };
+    if (buffer.length >= 8 && b0 === 0x89 && b1 === 0x50 && b2 === 0x4e && b3 === 0x47 && buffer[4] === 0x0d && buffer[5] === 0x0a && buffer[6] === 0x1a && buffer[7] === 0x0a) return { mime: 'image/png', ext: 'png' };
+    if (buffer.length >= 6) {
+        const sig = buffer.slice(0, 6).toString('ascii');
+        if (sig === 'GIF87a' || sig === 'GIF89a') return { mime: 'image/gif', ext: 'gif' };
+    }
+    if (buffer.length >= 12) {
+        const riff = buffer.slice(0, 4).toString('ascii');
+        const webp = buffer.slice(8, 12).toString('ascii');
+        if (riff === 'RIFF' && webp === 'WEBP') return { mime: 'image/webp', ext: 'webp' };
+    }
+    if (b0 === 0x42 && b1 === 0x4d) return { mime: 'image/bmp', ext: 'bmp' };
+    const head = buffer.slice(0, Math.min(512, buffer.length)).toString('utf8').trimStart();
+    if (head.startsWith('<?xml') || head.startsWith('<svg')) {
+        if (head.includes('<svg')) return { mime: 'image/svg+xml', ext: 'svg' };
+    }
+    return null;
+}
+
+
+// --- CONTROLLERS ---
+
+export const dmMessagePostController = async (req: AuthenticatedRequest, res: Response): Promise<any> => {
     try {
-        const { content, sender_id, receiver_id, reply_to } = req.body;
-
-        if (!sender_id || !receiver_id) {
-            return res.status(400).json({ msg: "sender_id and receiver_id are required." });
+        const body = req.body as DmMessageBody;
+        const content = body?.content ?? '';
+        const receiver_id = body.receiver_id as string;
+        const reply_to = body?.reply_to ?? null;
+        const sender_id = req.user?.sub || body.sender_id as string;
+        // Support both upload.single() (req.file) and upload.fields() (req.files)
+        const anyReq = req as any;
+        let uploadedFile = anyReq.file as Express.Multer.File | undefined;
+        if (!uploadedFile && anyReq.files) {
+            // Multer fields style: { image?: [File], file?: [File] }
+            const filesObj = anyReq.files as Record<string, Express.Multer.File[]>;
+            if (filesObj.image && filesObj.image.length) uploadedFile = filesObj.image[0];
+            else if (filesObj.file && filesObj.file.length) uploadedFile = filesObj.file[0];
+        }
+        if (uploadedFile) {
+            console.log('[DM Upload] Received file', {
+                fieldname: uploadedFile.fieldname,
+                originalname: uploadedFile.originalname,
+                mimetype: uploadedFile.mimetype,
+                size: uploadedFile.size
+            });
+        } else {
+            console.log('[DM Upload] No file found on request');
         }
 
-        // --- 1. Find or Create the DM Thread (same logic as before) ---
+        // 1. Validate required fields and UUID format
+        if (!sender_id || !uuidV4Regex.test(sender_id)) {
+            return res.status(400).json({ error: "Invalid sender_id format." });
+        }
+        if (!receiver_id || !uuidV4Regex.test(receiver_id)) {
+            return res.status(400).json({ error: "Invalid receiver_id format." });
+        }
+        if (!content && !uploadedFile) {
+            return res.status(400).json({ error: "Message content or a file is required." });
+        }
+
+        // 2. Find or create DM thread
         let threadId: string;
         const [user1_id, user2_id] = [sender_id, receiver_id].sort();
 
-        const { data: existingThread } = await supabase
+        const { data: existingThread, error: findThreadError } = await supabase
             .from('dm_threads')
             .select('id')
             .eq('user1_id', user1_id)
             .eq('user2_id', user2_id)
             .maybeSingle();
 
-        if (existingThread) {
-            threadId = existingThread.id;
-        } else {
-            const newThreadId = uuidv4();
-            const { error: threadInsertError } = await supabase.from('dm_threads').insert({
-                id: newThreadId,
-                user1_id,
-                user2_id,
-            });
-            if (threadInsertError) throw new Error('Could not create new DM thread.');
-            threadId = newThreadId;
+        if (findThreadError) {
+            console.error('Error finding DM thread:', findThreadError);
+            return res.status(500).json({ error: 'Server error finding DM thread' });
         }
 
-        // --- 2. Handle Optional File Upload (same logic as before) ---
+        if (existingThread) {
+            threadId = (existingThread as any).id;
+        } else {
+            const { data: newThread, error: threadInsertError } = await supabase
+                .from('dm_threads')
+                .insert({ user1_id, user2_id })
+                .select('id')
+                .single();
+            if (threadInsertError) {
+                console.error('Error creating new DM thread:', threadInsertError);
+                return res.status(500).json({ error: 'Could not create new DM thread.' });
+            }
+            threadId = (newThread as any).id;
+        }
+
+        // 3. Handle file upload
         let media_url: string | null = null;
-        if (req.file) {
-            const fileId = uuidv4();
-            const fileExt = req.file.originalname.split('.').pop();
-            const fileName = `${fileId}.${fileExt}`;
+        if (uploadedFile) {
+            let contentType: string | undefined = uploadedFile.mimetype;
+
+            // Some environments may give empty or generic types; attempt sniff only if likely image
+            if (!contentType || contentType === 'application/octet-stream') {
+                const sniff = sniffImageMime(uploadedFile.buffer);
+                if (sniff) contentType = sniff.mime; // sniff only handles images
+            }
+
+            if (!contentType) {
+                return res.status(400).json({ msg: 'Could not determine file MIME type.' });
+            }
+
+            if (!extFromMime(contentType)) {
+                return res.status(415).json({ msg: 'Unsupported file type.' });
+            }
+
+            const fileId = v4();
+            const fileExt = extFromMime(contentType) || (uploadedFile.originalname?.split('.').pop()?.toLowerCase() || 'bin');
+            const safeExt = fileExt.replace(/[^a-z0-9]/g,'');
+            const fileName = `${fileId}.${safeExt}`;
 
             const { error: uploadError } = await supabase.storage
-                .from('attachments') // Ensure this is your correct bucket name
-                .upload(fileName, req.file.buffer, {
-                    contentType: req.file.mimetype,
-                    upsert: false,
-                });
+                .from('attachments')
+                .upload(fileName, uploadedFile.buffer, { contentType });
 
-            if (uploadError) throw new Error('Could not upload file.');
-
+            if (uploadError) {
+                console.error('Error uploading file:', uploadError);
+                return res.status(500).json({ error: 'Could not upload file.' });
+            }
             const { data: publicUrlData } = supabase.storage.from('attachments').getPublicUrl(fileName);
             media_url = publicUrlData.publicUrl;
         }
 
-        // --- 3. Insert the Message AND get it back ---
-        const messageId = uuidv4();
+        // 4. Insert the message
         const newMessagePayload = {
-            id: messageId,
-            content: content || '', // Ensure content is not undefined
+            id: v4(),
+            content: content || '',
             media_url,
-            is_edited: false,
             thread_id: threadId,
             sender_id,
             reply_to: reply_to || null,
@@ -70,73 +194,92 @@ export const dmMessagePostController = async (req: Request, res: Response): Prom
         const { data: savedMessage, error: insertError } = await supabase
             .from('dm_messages')
             .insert(newMessagePayload)
-            .select() // Use .select() to return the inserted row
-            .single(); // We expect only one row back
+            .select()
+            .single();
 
         if (insertError) {
             console.error("Error inserting DM:", insertError);
             return res.status(500).json({ error: 'Server error while saving message' });
         }
 
-        // --- 4. CRITICAL FIX: Broadcast the message via Sockets ---
-        // Access io and userSocketMap from the request object
-        const io = req.app.get('socketio');
-        const userSocketMap = req.app.get('userSocketMap');
-
+        // 5. Broadcast via Sockets
+        const io = getIO();
         const receiverSocketId = userSocketMap.get(receiver_id);
-        const senderSocketId = userSocketMap.get(sender_id);
-
-        // Prepare a payload that matches the frontend's DirectMessage interface
-        const broadcastPayload = {
-            ...savedMessage,
-            timestamp: new Date(savedMessage.timestamp).toISOString(), // Ensure timestamp is in a consistent format
-        };
-
-        // Emit to the receiver if they are online
         if (receiverSocketId) {
-            io.to(receiverSocketId).emit("receive_dm", broadcastPayload);
+            io.to(receiverSocketId).emit("receive_dm", savedMessage);
         }
-
-        // Also emit a confirmation back to the sender so their UI updates
+        const senderSocketId = userSocketMap.get(sender_id);
         if (senderSocketId) {
-            io.to(senderSocketId).emit("dm_sent_confirmation", broadcastPayload);
+            io.to(senderSocketId).emit("dm_sent_confirmation");
         }
-        
-        // --- 5. Send the full message object back as the HTTP response ---
-        res.status(201).json(broadcastPayload);
 
-    } catch (error: any) {
-        console.error(`Error in dmMessagePostController: ${error.message}`);
-        return res.status(500).json({ msg: "Server Error" });
+        return res.status(200).json({ message: savedMessage });
+    } catch (e: any) {
+        console.error("Error in dmMessagePostController:", e);
+        return res.status(500).json({ msg: 'Server Error' });
     }
-}
+};
 
 
-export const messagePostController = async (req:Request, res:Response):Promise<any> => {
+export const channelmessagePostController = async (req:AuthenticatedRequest, res:Response):Promise<any> => {
     try {
-        const id = v4(); 
-        const {content, channel_id, sender_id, reply_to} = req.body;
-        
-        if (!channel_id) {
-            return res.status(400).json({'error':'No channelId received.'});
-        } 
-        if (!sender_id) {
-            return res.status(400).json({'error':'No senderId received.'});
+        const body = req.body as ChannelMessageBody;
+        const sender_id = req.user?.sub || body.sender_id;
+        const channel_id = body.channel_id as string;
+        const content = body?.content ?? "";
+        const anyReqCh = req as any;
+        let uploadedFile = anyReqCh.file as Express.Multer.File | undefined;
+        if (!uploadedFile && anyReqCh.files) {
+            const filesObj = anyReqCh.files as Record<string, Express.Multer.File[]>;
+            if (filesObj.image && filesObj.image.length) uploadedFile = filesObj.image[0];
+            else if (filesObj.file && filesObj.file.length) uploadedFile = filesObj.file[0];
+        }
+        if (uploadedFile) {
+            console.log('[Channel Upload] Received file', {
+                fieldname: uploadedFile.fieldname,
+                originalname: uploadedFile.originalname,
+                mimetype: uploadedFile.mimetype,
+                size: uploadedFile.size
+            });
+        } else {
+            console.log('[Channel Upload] No file found on request');
+        }
+
+        if (!sender_id || !uuidV4Regex.test(sender_id as string)) {
+            return res.status(400).json({ error: "Invalid sender_id format." });
+        }
+        if (!channel_id || !uuidV4Regex.test(channel_id)) {
+            return res.status(400).json({ error: "Invalid channel_id format." });
+        }
+        if (!content && !uploadedFile) {
+            return res.status(400).json({ error: "Message content or a file is required." });
         }
 
         let media_url:string | null = null;
-        
-        if (req.file) {
-            const fileExt = req.file.originalname.split('.').pop();
-            const fileName = `${id}.${fileExt}`;
+        const id = v4();
 
-            const { data, error: uploadError } = await supabase.storage
+        if (uploadedFile) {
+            let contentType: string | undefined = uploadedFile.mimetype;
+            if (!contentType || contentType === 'application/octet-stream') {
+                const sniff = sniffImageMime(uploadedFile.buffer);
+                if (sniff) contentType = sniff.mime;
+            }
+            if (!contentType) {
+                return res.status(400).json({ msg: 'Could not determine file MIME type.' });
+            }
+            if (!extFromMime(contentType)) {
+                return res.status(415).json({ msg: 'Unsupported file type.' });
+            }
+            const fileExt = extFromMime(contentType) || uploadedFile.originalname.split('.').pop() || 'bin';
+            const safeExt = fileExt.replace(/[^a-z0-9]/g,'');
+            const fileName = `${id}.${safeExt}`;
+
+            const { error: uploadError } = await supabase.storage
                 .from('attachments')
-                .upload(fileName, req.file.buffer, {
-                    contentType: req.file.mimetype,
+                .upload(fileName, uploadedFile.buffer, {
+                    contentType,
                     upsert: true,
                 });
-
             if (uploadError) {
                 console.error(uploadError);
                 return res.status(500).json({'error':'Server error during file upload'});
@@ -145,59 +288,56 @@ export const messagePostController = async (req:Request, res:Response):Promise<a
             const { data: publicUrlData } = supabase.storage.from('attachments').getPublicUrl(fileName);
             media_url = publicUrlData.publicUrl;
         }
-        
-        // 1. calling shared service to save the message data.
-        const savedMessage = await saveMessage({
-            content,
+
+        const { data: savedMessage, error: insertError } = await supabase
+        .from("messages")
+        .insert({
+            id,
             channel_id,
             sender_id,
-            media_url, // Pass the file URL if it exists
-        });
+            content,
+            media_url
+        })
+        .select()
+        .single();
+        if(insertError){
+            console.error(insertError);
+            return res.status(500).json({error:'Server error during message save'});
+        }
 
-        // 3. Get the socket.io instance and broadcast the new message.
-        // in main server file: app.set('socketio', io);
-        const io = req.app.get('socketio');
-        io.to(channel_id).emit('new_message', savedMessage);
+        const io = getIO();
+        io.to(channel_id).emit("new_message", savedMessage);
         
-        console.log(`Message with media from ${sender_id} was broadcasted to room ${channel_id}`);
+        return res.status(200).json(savedMessage);
 
-        // 4. Send a success response back to the client that made the upload request.
-        return res.status(200).json({
-            msg: 'Message sent successfully',
-            message: savedMessage,
-        });
-        
     } catch(error:any) {
         console.error(error);
         return res.status(500).json({error:'Server error'});
     }
 };
 
-/* note : for every get message request , we send 15 messages. */
-/* if the offset received is 0 , we send latest 15 messgages. 
-    if the offset is 1 , then we send the next 15 messages and so on */
 export const messageGetController = async (req:Request, res:Response):Promise<any>=>{
     try{
-        const channel_id  = req.query?.channel_id as string;;
+        const channel_id  = req.query?.channel_id as string;
+        const offset = parseInt(req.query?.offset as string, 10) || 0; // Pagination offset
+        const pageSize = 15; // Number of messages per request
 
-        /* if no offset is received , then we assume 0 as offset*/
-        if(!channel_id){
-            return res.status(400).json({msg:'No channelId received'});
+        if(!channel_id || !uuidV4Regex.test(channel_id)){
+            return res.status(400).json({msg:'Invalid channelId received'});
         }
 
-        // Fetch messages
         const { data, error } = await supabase
             .from('messages')
             .select('*')
             .eq('channel_id', channel_id)
-            .order('timestamp', { ascending: false }); //latest messages
+            .order('timestamp', { ascending: false })
+            .range(offset, offset + pageSize - 1); // Apply pagination here
 
         if(error){
             console.error('Error fetching messages:', error);
             return res.status(500).json({msg:'Server Error'});
         }
 
-        // Fetch sender usernames for all messages
         const senderIds = data ? Array.from(new Set(data.map((msg:any) => msg.sender_id))) : [];
         let usersMap = new Map();
         if(senderIds.length > 0){
@@ -212,13 +352,11 @@ export const messageGetController = async (req:Request, res:Response):Promise<an
             }
         }
 
-        // Attach username to each message
         const messagesWithUsernames = data ? data.map((msg:any) => ({
             ...msg,
             username: usersMap.get(msg.sender_id) || null
         })) : [];
 
-        console.log('Fetched messages with usernames:', messagesWithUsernames);
         return res.status(200).json({
             data: messagesWithUsernames
         });
@@ -235,67 +373,15 @@ interface DmThread {
     user2_id:string;
 }
 
-/**
- * Fetches ALL messages received by a user across ALL their DM threads.
- *
- * This function is useful for features like a global inbox or notification center.
- */
-
-/*
-export const getDmMessages = async (req: Request, res: Response): Promise<void> => {
-    try {
-        const { userId } = req.params;
-        if (!userId) {
-            res.status(400).json({ error: 'User ID is required in the URL.' });
-            return 
-        }
-
-        // This query starts from the `dm_messages` table and uses a join to filter
-        // based on the threads the user is a member of.
-        const { data: messages, error } = await supabase
-            .from('dm_messages')
-            .select(`
-                id,
-                content,
-                media_url,
-                timestamp,
-                sender_id,
-                dm_threads!inner ( user1_id, user2_id )
-            `)
-            // CRITICAL 1: Only get messages where the sender is NOT the current user.
-            .not('sender_id', 'eq', userId)
-            // CRITICAL 2: Only look in threads where the current user is either user1 or user2.
-            .or(`user1_id.eq.${userId},user2_id.eq.${userId}`, { foreignTable: 'dm_threads' })
-            .order('timestamp', { ascending: false }); // Order by newest first
-
-        if (error) {
-            console.error('Error fetching all received DMs:', error);
-            res.status(500).json({ error: 'Could not fetch received DMs.' });
-            return 
-        }
-
-        res.status(200).json(messages || []);
-        return 
-
-    } catch (err) {
-        console.error('Server error in getAllReceivedDmMessages:', err);
-        res.status(500).json({ error: 'Server error.' });
-        return 
-    }
-};
-*/
-
-
 export const getDmMessages = async (req: Request, res: Response): Promise<void> => {
     try {
         const user_id = req.params.userId;
 
-        if (!user_id || typeof user_id !== 'string') {
-            res.status(400).json({ error: 'user_id is required as a parameter.' });
+        if (!user_id || typeof user_id !== 'string' || !uuidV4Regex.test(user_id)) {
+            res.status(400).json({ error: 'Invalid user_id parameter.' });
             return;
         }
 
-        // Step 1: Find all DM threads where the user is a participant (No change here)
         const { data: threads, error: threadError } = await supabase
             .from('dm_threads')
             .select('id, user1_id, user2_id')
@@ -312,15 +398,11 @@ export const getDmMessages = async (req: Request, res: Response): Promise<void> 
             return;
         }
 
-        // --- OPTIMIZATION START ---
-
-        // Step 2: Collect all unique IDs of the other users and all thread IDs
         const otherUserIds = threads.map(thread => 
             thread.user1_id === user_id ? thread.user2_id : thread.user1_id
         );
         const threadIds = threads.map(thread => thread.id);
 
-        // Step 3: Fetch all required user profiles in a single query
         const { data: usersData, error: usersError } = await supabase
             .from('users')
             .select('id, username, avatar_url')
@@ -331,15 +413,13 @@ export const getDmMessages = async (req: Request, res: Response): Promise<void> 
             res.status(500).json({ error: 'Failed to fetch user profiles.' });
             return;
         }
-        // Create a map for easy lookup: { 'user-id-123': { id: '...', username: '...' } }
         const usersMap = new Map(usersData.map(user => [user.id, user]));
 
-        // Step 4: Fetch all messages from all relevant threads in a single query
         const { data: allMessages, error: messagesError } = await supabase
             .from('dm_messages')
             .select('*')
             .in('thread_id', threadIds)
-            .order('timestamp', { ascending: true }); // Fetch in ascending order for easier grouping
+            .order('timestamp', { ascending: true });
 
         if (messagesError) {
             console.error('Error fetching messages:', messagesError);
@@ -347,7 +427,6 @@ export const getDmMessages = async (req: Request, res: Response): Promise<void> 
             return;
         }
 
-        // Step 5: Group the messages by thread_id on the server
         const messagesByThread = new Map<string, any[]>();
         allMessages.forEach(message => {
             const threadMessages = messagesByThread.get(message.thread_id) || [];
@@ -355,13 +434,10 @@ export const getDmMessages = async (req: Request, res: Response): Promise<void> 
             messagesByThread.set(message.thread_id, threadMessages);
         });
 
-        // Step 6: Combine the data into the final response structure
         const groupedMessages = threads.map(thread => {
             const otherUserId = thread.user1_id === user_id ? thread.user2_id : thread.user1_id;
             const otherUser = usersMap.get(otherUserId) || null;
             const messages = messagesByThread.get(thread.id) || [];
-            
-            // Optionally, limit to the last 15 messages here if needed, now that they are grouped.
             const recentMessages = messages.slice(-15);
 
             return {
@@ -371,7 +447,6 @@ export const getDmMessages = async (req: Request, res: Response): Promise<void> 
             };
         });
         
-        // --- OPTIMIZATION END ---
         res.status(200).json({ threads: groupedMessages });
     } catch (err) {
         console.error('Unexpected server error in getDmMessages:', err);

@@ -6,14 +6,15 @@ import multer from 'multer';
 const storage = multer.memoryStorage();
 const upload = multer({ storage }); 
 
-import { messagePostController, messageGetController, getDmMessages, dmMessagePostController} from "../controllers/messageController";
+import { channelmessagePostController, messageGetController, getDmMessages, dmMessagePostController} from "../controllers/messageController";
 
 /*IMPORTANT : change the REST route below to the socket architecture as needed */
 
 /*IMPORTANT : implement the auth middleware*/
 
-router.post('/upload', upload.single('file'), messagePostController);
-router.post('/upload_dm', upload.single('file'), dmMessagePostController);
+router.post('/upload', upload.fields([{name: 'image', maxCount: 6}, {name: 'file', maxCount: 6}]), channelmessagePostController);
+// Accept either 'image' or 'file' field for DM uploads to avoid MulterError: Unexpected field
+router.post('/upload_dm', upload.fields([{ name: 'image', maxCount: 6 }, { name: 'file', maxCount: 6 }]), dmMessagePostController);
 router.get('/fetch', messageGetController);
 router.get('/:userId/getDms',getDmMessages);
 
