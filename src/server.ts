@@ -19,6 +19,7 @@ import { rateLimiter } from './middleware/rateLimiter';
 import { setupChatSocket } from './sockets/chatSocket';
 import { subscribeToChannel } from './redis/sub';
 import { setupVoiceSocket } from './sockets/voiceSocket';
+import {setIO} from "./sockets/chatSocket";
 
 const app = express();
 const httpServer = http.createServer(app);
@@ -32,8 +33,9 @@ const io = new Server(httpServer, {
 
 app.set('socketio', io);
 setupChatSocket(io);
-setupVoiceSocket(io);
 subscribeToChannel(io);
+setIO(io);
+setupVoiceSocket();
 
 // Middleware
 app.use(express.json());

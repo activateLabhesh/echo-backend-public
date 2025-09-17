@@ -5,13 +5,15 @@ import { saveDMMessage } from "../lib/dmMessageServices";
 import { supabase } from "../client/supabase";
 import { UrlObject } from "url";
 
-
 export const userSocketMap = new Map<string, string>(); // Map<userId, socketId>
 
 let ioInstance: Server | null = null;
 
 export const setIO = (io: Server) => {
   ioInstance = io;
+  if(ioInstance === io){
+    console.log("IO instance set successfully.");
+  }
 };
 
 export const getIO = (): Server => {
@@ -20,10 +22,12 @@ export const getIO = (): Server => {
 };
 
 export const setupChatSocket = (io: Server) => {
-  io.on("connection", (socket: Socket) => {
+  io.on("connection", (socket: Socket) => { 
     console.log(`User connected for chat: ${socket.id}`);
 
-    // The frontend sends the userId via socket.auth
+
+
+    // The frontend sends the userId via socket.auth 
     const userId = socket.handshake.auth.userId;
     if (userId) {
       userSocketMap.set(userId, socket.id);
@@ -132,7 +136,7 @@ export const setupChatSocket = (io: Server) => {
             } else {
                 console.log(`User ${receiverId} is offline. DM is stored.`);
             }
-            
+
             // Send confirmation back to the sender so their UI updates instantly.
             socket.emit("dm_sent_confirmation");
 
@@ -152,6 +156,5 @@ export const setupChatSocket = (io: Server) => {
       }
       console.log(`Socket disconnected: ${socket.id}`);
     });
-
   });
 };

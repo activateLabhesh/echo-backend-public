@@ -24,9 +24,6 @@ type ChannelMessageBody = {
     file?: any;
 };
 
-// Regex for a valid UUID v4
-const uuidV4Regex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
 
 // --- UTILITY FUNCTIONS ---
 // These functions are good and will be kept as-is.
@@ -104,10 +101,10 @@ export const dmMessagePostController = async (req: AuthenticatedRequest, res: Re
         }
 
         // 1. Validate required fields and UUID format
-        if (!sender_id || !uuidV4Regex.test(sender_id)) {
+        if (!sender_id ) {
             return res.status(400).json({ error: "Invalid sender_id format." });
         }
-        if (!receiver_id || !uuidV4Regex.test(receiver_id)) {
+        if (!receiver_id) {
             return res.status(400).json({ error: "Invalid receiver_id format." });
         }
         if (!content && !uploadedFile) {
@@ -164,6 +161,7 @@ export const dmMessagePostController = async (req: AuthenticatedRequest, res: Re
                 return res.status(415).json({ msg: 'Unsupported file type.' });
             }
 
+            
             const fileId = v4();
             const fileExt = extFromMime(contentType) || (uploadedFile.originalname?.split('.').pop()?.toLowerCase() || 'bin');
             const safeExt = fileExt.replace(/[^a-z0-9]/g,'');
@@ -178,8 +176,8 @@ export const dmMessagePostController = async (req: AuthenticatedRequest, res: Re
                 return res.status(500).json({ error: 'Could not upload file.' });
             }
             const { data: publicUrlData } = supabase.storage.from('attachments').getPublicUrl(fileName);
-            media_url = publicUrlData.publicUrl;
-        }
+            media_url = publicUrlData.publicUrl;}
+        
 
         // 4. Insert the message
         const newMessagePayload = {
@@ -245,10 +243,10 @@ export const channelmessagePostController = async (req:AuthenticatedRequest, res
             console.log('[Channel Upload] No file found on request');
         }
 
-        if (!sender_id || !uuidV4Regex.test(sender_id as string)) {
+        if (!sender_id ) {
             return res.status(400).json({ error: "Invalid sender_id format." });
         }
-        if (!channel_id || !uuidV4Regex.test(channel_id)) {
+        if (!channel_id ) {
             return res.status(400).json({ error: "Invalid channel_id format." });
         }
         if (!content && !uploadedFile) {
@@ -322,7 +320,7 @@ export const messageGetController = async (req:Request, res:Response):Promise<an
         const offset = parseInt(req.query?.offset as string, 10) || 0; // Pagination offset
         const pageSize = 15; // Number of messages per request
 
-        if(!channel_id || !uuidV4Regex.test(channel_id)){
+        if(!channel_id ){
             return res.status(400).json({msg:'Invalid channelId received'});
         }
 
@@ -377,7 +375,7 @@ export const getDmMessages = async (req: Request, res: Response): Promise<void> 
     try {
         const user_id = req.params.userId;
 
-        if (!user_id || typeof user_id !== 'string' || !uuidV4Regex.test(user_id)) {
+        if (!user_id || typeof user_id !== 'string') {
             res.status(400).json({ error: 'Invalid user_id parameter.' });
             return;
         }
