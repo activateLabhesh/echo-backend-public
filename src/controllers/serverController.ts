@@ -1,7 +1,10 @@
 import { Request,Response } from 'express';
 import { supabase } from '../client/supabase';
 import { AuthenticatedRequest } from '../middleware/authMiddleware';
+import {v4} from 'uuid';
+import { error } from 'console';
 import { RequestWithBusboy } from '../middleware/busboyMiddleware';
+
 
 /**
  * Handles the creation of a new server.
@@ -205,3 +208,177 @@ export const joinServer = async (req: AuthenticatedRequest, res: Response): Prom
         res.status(500).json({ error: 'An unexpected internal server error occurred.' });
     }
 };
+
+interface Invite {
+  id: string;
+  inviter_id: string;
+  server_id: string;
+  use_limit: number | null;   
+  expiry: string | null;      
+  people_joined: number;
+  is_valid: boolean;
+}
+
+//change to AuthorizedRequest if needed.
+export const inviteToServer = async(req:Request, res:Response):Promise<any> =>{
+  const { server_id, user_id , limit , expiry } = req.body;
+  if (!server_id) {
+        res.status(400).json({ error: 'Server ID is required in the request body.' });
+        return;
+    }
+  if(!user_id){
+      res.status(400).json({error: 'User id is required in request body .'});
+  }
+  //if no expiry , then its always valid .
+  //if no limit , any number of users can use to join the server with that link
+  try{
+
+    //check for roles
+    //first lets query this serverand check if this user is the owner (also if this server really exists)
+    const {data: serverData , error:queryerror} = await supabase
+          .from('servers')
+          .select('owner_id')
+          .eq('server_id', server_id)
+          .maybeSingle();
+
+    if(!serverData){
+      return res.status(404).json({error:"No such server id found"});
+    }
+    if(queryerror){
+      console.log(`Error in querying from servers table while creating invite : ${queryerror}`);
+      return res.status(500).json({error:"Server Error"});
+    }
+
+    if(serverData.owner_id != user_id){
+      return res.status(404).json({error:"User given is not the owner"})
+    }
+
+    const id = v4();
+    const { error: insertError } = await supabase.from('invites').insert({
+          id,
+          inviter_id: user_id,
+          server_id,
+          use_limit: limit,
+          expiry,
+          people_joined:0,//initially
+          is_valid:true
+    });
+    if(insertError){
+      console.log(`Error in creating invite : ${insertError}`);
+      return res.status(500).json({error:" Could not create invite"});
+    }
+    return res.status(201).json({invite_id : id});
+
+  }
+  catch(e){
+    console.log(`Error in creating invite : ${e}`);
+    return res.status(500).json({error:" Could not create invite"});
+  }
+};
+
+
+
+export const joinWithInvite = async(req:Request, res:Response):Promise<any> =>{
+  const {invite_id, user_id } = req.body;
+
+  /* when making it authenticated 
+  const email_Id = req.user?.email;
+  if (!email_Id) {
+        res.status(401).json({ error: 'Authentication error: User email not found.' });
+        return;
+  }
+  const { data: userData, error: userError } = await supabase
+  .from("users")
+  .select("id")
+  .eq("email", email_Id)
+  .single();
+
+if (!userData) {
+  return res.status(404).json({ error: "User not found" });
+}
+
+if (userError) {
+  console.log("Error fetching user id:", userError);
+  return res.status(500).json({ error: "Server error while fetching user" });
+}
+
+const user_id = userData.id;
+*/
+
+  if(!invite_id){
+    return res.status(400).json({error:"No invite_id received in body"});
+  }
+  if(!user_id){
+    return res.status(400).json({error:"No user_id received in body"});
+  }
+  try{
+    const {data: invite_data, error: queryerror} = await supabase
+        .from('invites')
+        .select('*')
+        .eq('id', invite_id)
+        .single()
+    const invite = invite_data as Invite | null;
+    if(!invite){
+      return res.status(404).json({error : "No such invite id found"});
+    }
+    if(queryerror){
+      console.log(`Error in querying from invites table : ${queryerror}`);
+      return res.status(500).json({error : "Server Error in querying from invites"});
+    }
+
+    //now check if the limit is already over or expired invite or is still valid
+    if(invite && invite.use_limit && invite.use_limit <= invite.people_joined){
+      return res.status(400).json({error : "More people cannot join using this invite id"});
+    }
+    if (invite.expiry && new Date(invite.expiry) < new Date()) {
+      return res.status(400).json({ error: "This invite has expired" });
+    }
+    //then check if the user is already a part of this server
+    const { data: existingMember, error: memberError } = await supabase
+      .from("server_members")
+      .select("user_id")
+      .eq("server_id", invite.server_id)
+      .eq("user_id", user_id)
+      .maybeSingle();
+
+    if (memberError) {
+      console.log("Error checking membership:", memberError);
+      return res.status(500).json({ error: "Server error while checking membership" });
+    }
+
+    if (existingMember) {
+      return res.status(400).json({ error: "User is already a member of this server" });
+    }
+
+    //if yes then add this user in the server_members table 
+
+    const { error: insertMemberError } = await supabase
+      .from("server_members")
+      .insert({
+        server_id: invite.server_id,
+        user_id,
+        role: "member"   
+      });
+
+    if (insertMemberError) {
+      console.log("Error adding user to server_members:", insertMemberError);
+      return res.status(500).json({ error: "Could not add user to server" });
+    }
+
+    const { error: updateError } = await supabase
+      .from("invites")
+      .update({ people_joined: invite.people_joined + 1 })
+      .eq("id", invite_id);
+
+    if (updateError) {
+      console.log("Error updating invite usage:", updateError);
+    }
+
+    return res.status(201).json({msg:"Joined server successfully", server_id : invite.server_id});
+
+  }
+  catch(e){
+    console.log(`Error in joining server : ${e}`);
+    return res.status(500).json({msg:'Server Error'});
+  }
+}
