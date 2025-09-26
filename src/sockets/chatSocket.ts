@@ -3,16 +3,31 @@ import { Server, Socket } from "socket.io";
 import { saveMessage } from "../lib/messageServices";
 import { saveDMMessage } from "../lib/dmMessageServices";
 import { supabase } from "../client/supabase";
+import { UrlObject } from "url";
 
+export const userSocketMap = new Map<string, string>(); // Map<userId, socketId>
 
-const userSocketMap = new Map<string, string>(); // Map<userId, socketId>
+let ioInstance: Server | null = null;
 
+export const setIO = (io: Server) => {
+  ioInstance = io;
+  if(ioInstance === io){
+    console.log("IO instance set successfully.");
+  }
+};
+
+export const getIO = (): Server => {
+  if (!ioInstance) throw new Error("Socket.IO has not been initialized yet.");
+  return ioInstance;
+};
 
 export const setupChatSocket = (io: Server) => {
-  io.on("connection", (socket: Socket) => {
+  io.on("connection", (socket: Socket) => { 
     console.log(`User connected for chat: ${socket.id}`);
 
-    // The frontend sends the userId via socket.auth
+
+
+    // The frontend sends the userId via socket.auth 
     const userId = socket.handshake.auth.userId;
     if (userId) {
       userSocketMap.set(userId, socket.id);
@@ -32,8 +47,6 @@ export const setupChatSocket = (io: Server) => {
       // 1. checking the coming data
       if (!data.channelId || !data.senderId || !data.content) {
         console.error('Invalid chat message payload:', data);
-        socket.emit('message_error', 'Your message is missing required information.');
-        return;
       }
       try {
         // 2. payload from services that we use to save the data..
@@ -56,15 +69,12 @@ export const setupChatSocket = (io: Server) => {
       }
     });
 
-    socket.on('disconnect', () => {
-      console.log('User disconnected:', socket.id);
-
-    });
+    // (Removed redundant simple disconnect logger; cleanup handled below)
     // dm chat
     // This event should now only handle text-based DMs for performance.
-    socket.on("send_dm", async (dmPayload: { senderId: string; receiverId: string; message: string; tempId?: string }) => {
+    socket.on("send_dm", async (dmPayload: { senderId: string; receiverId: string; message: string; mediaurl?: UrlObject }) => {
         console.log('Received DM payload:', dmPayload);
-        const { senderId, receiverId, message } = dmPayload;
+        const { senderId, receiverId, message, mediaurl } = dmPayload;
         
         if (!receiverId || !senderId || !message) {
             console.error("Invalid DM payload:", dmPayload);
@@ -126,10 +136,9 @@ export const setupChatSocket = (io: Server) => {
             } else {
                 console.log(`User ${receiverId} is offline. DM is stored.`);
             }
-            
+
             // Send confirmation back to the sender so their UI updates instantly.
-            console.log(">>> [3] EMITTING dm_sent_confirmation back to sender", savedDm);
-            socket.emit("dm_sent_confirmation", savedDm);
+            socket.emit("dm_sent_confirmation");
 
         } catch (error) {
             console.error("Failed to process DM:", error);
@@ -147,6 +156,5 @@ export const setupChatSocket = (io: Server) => {
       }
       console.log(`Socket disconnected: ${socket.id}`);
     });
-
   });
 };

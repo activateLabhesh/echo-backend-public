@@ -34,5 +34,9 @@ export const saveDMMessage = async (data: DMmessageData) => {
     throw new Error('Could not save the direct message.');
   }
 
+  if(data.media_url){
+    console.log("media receved. ", data.media_url);
+  }
+
   return savedMessage;
 };

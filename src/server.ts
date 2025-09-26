@@ -14,11 +14,13 @@ import channelroutes from './routes/channel';
 import serverroutes from './routes/servers';
 import roleroutes from './routes/roles';
 import contactroutes from "./routes/contact";
+import friendroutes from "./routes/friend"
 
 import { rateLimiter } from './middleware/rateLimiter';
 import { setupChatSocket } from './sockets/chatSocket';
 import { subscribeToChannel } from './redis/sub';
 import { setupVoiceSocket } from './sockets/voiceSocket';
+import {setIO} from "./sockets/chatSocket";
 
 const app = express();
 const httpServer = http.createServer(app);
@@ -32,8 +34,9 @@ const io = new Server(httpServer, {
 
 app.set('socketio', io);
 setupChatSocket(io);
-setupVoiceSocket(io);
 subscribeToChannel(io);
+setIO(io);
+setupVoiceSocket();
 
 // Middleware
 app.use(express.json());
@@ -53,7 +56,7 @@ app.use('/api/newserver', serverroutes);
 app.use('/api/channel', channelroutes);
 app.use('/api/roles', roleroutes);
 app.use('/api/contact', contactroutes);
-
+app.use('/api/friends',friendroutes)
 // Health check endpoint
 app.get('/', (_req: Request, res: Response) => {
   res.json({ message: 'Hello from echo-backend!', status: 'healthy' });

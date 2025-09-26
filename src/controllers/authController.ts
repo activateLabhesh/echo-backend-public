@@ -141,7 +141,13 @@ if (fetchError || !userDetails) {
       maxAge: 60 * 60 * 24 * 30,
     });
     console.log("Logged in the user.");
-    res.status(200).json({ message: 'Logged in', user: userDetails});
+    res.status(200).json({ 
+      message: 'Logged in', 
+      user: userDetails,
+      accessToken: access_token,
+      refreshToken: refresh_token,
+      expiresIn: data.session.expires_in
+    });
   }
 };
 
@@ -185,7 +191,12 @@ export const refreshToken = async (req: Request, res: Response): Promise <void> 
       ...cookieOptions,
       maxAge: 60 * 60 * 24 * 30,
     });
-    res.status(200).json({ message: 'Token refreshed' });
+    res.status(200).json({ 
+      message: 'Token refreshed',
+      accessToken: access_token,
+      refreshToken: newRefreshToken,
+      expiresIn: data.session.expires_in
+    });
   }
 };
 

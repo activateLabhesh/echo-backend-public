@@ -274,3 +274,4 @@ export const removeAvatar = async (req: AuthenticatedRequest, res: Response): Pr
     res.status(500).json({ message: 'An unexpected internal server error occurred.' });
   }
 }
+

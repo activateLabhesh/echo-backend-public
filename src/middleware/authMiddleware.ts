@@ -4,7 +4,8 @@ import jwt from 'jsonwebtoken';
 const JWT_SECRET = process.env.JWT_SECRET!;
 
 interface JwtPayload {
-  sub: string; // The user ID from the token
+  sub: string;
+  id: string; // The user ID from the token
   email?: string;
 }
 
