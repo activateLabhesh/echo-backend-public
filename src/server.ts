@@ -25,9 +25,11 @@ import {setIO} from "./sockets/chatSocket";
 const app = express();
 const httpServer = http.createServer(app);
 
+const allowedOrigins = [process.env.FRONTEND_URL, "http://localhost:3000"];
+
 const io = new Server(httpServer, {
   cors: {
-    origin: process.env.FRONTEND_URL,
+    origin: allowedOrigins,
     methods: ["GET", "POST"]
   }
 });
@@ -42,7 +44,7 @@ setupVoiceSocket();
 app.use(express.json());
 app.use(cookieParser());
 app.use(cors({
-  origin: process.env.FRONTEND_URL,
+  origin: allowedOrigins,
   credentials: true
 }));
 
