@@ -124,15 +124,13 @@ if (fetchError || !userDetails) {
   return;
 }
 
-
-  // console.log("login", data.session.expires_in);
   if(isMobileApp){
     res.status(200).json({
       message : "Logged In",
       user: userDetails,
       accessToken:access_token,
       refreshToken:refresh_token,
-      expiresIn: data.session.expires_in, ///////////////////////////////////////////////////////////////////////////
+      expiresIn: data.session.expires_in,
     })
   } else{
     res.cookie('access_token', access_token, cookieOptions);

@@ -27,19 +27,15 @@ export function setupVoiceSocket() {
 
   io.on('connection', (socket) => {
     console.log(`User connected for voice: ${socket.id}`);
-    
-    // Get the userId from the userSocketMap
-    const userId = getUserIdFromSocketId(socket.id);
-
-    // Initial validation
-    if (!userId) {
-      console.error(`Socket ${socket.id} not found in userSocketMap. Disconnecting.`);
-      socket.disconnect(true);
-      return;
-    }
 
     // This is the new, fully implemented 'join_voice_channel' handler
     socket.on('join_voice_channel', (channelId: string) => {
+      const userId = getUserIdFromSocketId(socket.id);
+      if (!userId) {
+        console.error(`Unauthenticated socket ${socket.id} attempted to join channel ${channelId}.`);
+        return;
+      }
+      
       // Check if the user is already in a channel.
       let existingChannelId: string | null = null;
       for (const [key, users] of channelUsers.entries()) {
