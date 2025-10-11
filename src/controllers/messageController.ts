@@ -176,7 +176,9 @@ export const dmMessagePostController = async (req: AuthenticatedRequest, res: Re
                 return res.status(500).json({ error: 'Could not upload file.' });
             }
             const { data: publicUrlData } = supabase.storage.from('attachments').getPublicUrl(fileName);
-            media_url = publicUrlData.publicUrl;}
+            media_url = publicUrlData.publicUrl;
+        
+        }
         
 
         // 4. Insert the message
