@@ -15,7 +15,7 @@ export interface AuthenticatedRequest extends Request {
 }
 
 export const authenticate = (req: Request, res: Response, next: NextFunction): void => {
- let token: string | undefined;
+let token: string | undefined;
 
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')){
@@ -29,20 +29,6 @@ export const authenticate = (req: Request, res: Response, next: NextFunction): v
     res.status(401).json({ message: 'No token provided' });
     return;
   }
-
-  const authHeader = req.headers.authorization;
-  if (authHeader && authHeader.startsWith('Bearer ')){
-      token = authHeader.split(' ')[1];
-  }
-  else if(req.cookies &&req.cookies.access_token){
-      token = req.cookies.access_token;
-  }  
-   
-  if (!token) {
-    res.status(401).json({ message: 'No token provided' });
-    return;
-  }
-  
   try {
     const payload = jwt.verify(token, JWT_SECRET) as JwtPayload;
     
