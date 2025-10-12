@@ -166,6 +166,45 @@ export const getProfile = async(req: AuthenticatedRequest, res: Response): Promi
   }
 };
 
+export const getUserProfileById = async(req: AuthenticatedRequest, res: Response): Promise <void> =>{
+  if (!req.user) {
+    res.status(401).json({ message: 'Authentication error, user not found on request.' });
+    return;
+  }
+
+  const { userId } = req.params;
+  
+  if (!userId) {
+    res.status(400).json({ message: 'User ID is required.' });
+    return;
+  }
+
+  try {
+    const { data: userDetails, error: fetchError } = await supabase
+      .from('users')
+      .select('id, username, fullname, avatar_url, bio, status, created_at')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (fetchError) {
+      console.error('Error fetching user profile:', fetchError.message);
+      res.status(500).json({ message: 'An internal server error occurred.' });
+      return;
+    }
+
+    if (!userDetails) {
+      res.status(404).json({ message: 'User profile not found.' });
+      return;
+    }
+    
+    res.status(200).json({ message: 'Profile details fetched successfully', user: userDetails });
+
+  } catch (error) {
+    console.error('Unexpected error in getUserProfileById:', error);
+    res.status(500).json({ message: 'An unexpected internal server error occurred.' });
+  }
+};
+
 export const deleteProfile = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   if (!req.user) {
     res.status(401).json({ message: 'Authentication error, user not found on request.' });
