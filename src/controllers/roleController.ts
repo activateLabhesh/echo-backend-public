@@ -368,3 +368,153 @@ export const assignRole = async (req: AuthenticatedRequest, res: Response): Prom
         res.status(500).json({ error: 'An unexpected internal server error occurred.' });
     }
 };
+
+// Delete role
+export const deleteRole = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const { server_id, role_id } = req.params;
+    const userId = req.user?.sub;
+
+    if (!userId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    // Check if user is server owner or has manage roles permission
+    const { data: serverData, error: serverError } = await supabase
+      .from('servers')
+      .select('owner_id')
+      .eq('id', server_id)
+      .single();
+
+    if (serverError || !serverData) {
+      res.status(404).json({ error: 'Server not found' });
+      return;
+    }
+
+    if (serverData.owner_id !== userId) {
+      res.status(403).json({ error: 'Only server owner can delete roles' });
+      return;
+    }
+
+    // Check if role exists and belongs to this server
+    const { data: roleData, error: roleError } = await supabase
+      .from('roles')
+      .select('*')
+      .eq('id', role_id)
+      .eq('server_id', server_id)
+      .single();
+
+    if (roleError || !roleData) {
+      res.status(404).json({ error: 'Role not found' });
+      return;
+    }
+
+    // Prevent deletion of default roles
+    if (roleData.name === 'Member' || roleData.name === 'Admin') {
+      res.status(400).json({ error: 'Cannot delete default roles' });
+      return;
+    }
+
+    // Delete role (this should cascade and remove user_roles entries)
+    const { error: deleteError } = await supabase
+      .from('roles')
+      .delete()
+      .eq('id', role_id)
+      .eq('server_id', server_id);
+
+    if (deleteError) {
+      res.status(500).json({ error: 'Failed to delete role' });
+      return;
+    }
+
+    res.status(200).json({ message: 'Role deleted successfully' });
+
+  } catch (error) {
+    console.error('Error deleting role:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+// Remove role from user
+export const removeRoleFromUser = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const { server_id } = req.params;
+    const { user_id, role_id } = req.body;
+    const requesterId = req.user?.sub;
+
+    if (!requesterId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    if (!user_id || !role_id) {
+      res.status(400).json({ error: 'User ID and Role ID are required' });
+      return;
+    }
+
+    // Check if requester is server owner or has manage roles permission
+    const { data: serverData, error: serverError } = await supabase
+      .from('servers')
+      .select('owner_id')
+      .eq('id', server_id)
+      .single();
+
+    if (serverError || !serverData) {
+      res.status(404).json({ error: 'Server not found' });
+      return;
+    }
+
+    if (serverData.owner_id !== requesterId) {
+      res.status(403).json({ error: 'Only server owner can manage roles' });
+      return;
+    }
+
+    // Remove role from user
+    const { error: removeError } = await supabase
+      .from('user_roles')
+      .delete()
+      .eq('user_id', user_id)
+      .eq('role_id', role_id);
+
+    if (removeError) {
+      res.status(500).json({ error: 'Failed to remove role from user' });
+      return;
+    }
+
+    res.status(200).json({ message: 'Role removed from user successfully' });
+
+  } catch (error) {
+    console.error('Error removing role from user:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+// Get all available permissions
+export const getAvailablePermissions = async (req: Request, res: Response): Promise<void> => {
+  try {
+    // Return a list of available permissions
+    const permissions = [
+      'Manage Server',
+      'Manage Roles',
+      'Manage Channels',
+      'Kick Members',
+      'Ban Members',
+      'Manage Messages',
+      'Send Messages',
+      'Manage Invites',
+      'View Channels',
+      'Connect',
+      'Speak',
+      'Mute Members',
+      'Deafen Members',
+      'Move Members'
+    ];
+
+    res.status(200).json(permissions);
+
+  } catch (error) {
+    console.error('Error getting available permissions:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
