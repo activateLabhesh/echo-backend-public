@@ -46,8 +46,6 @@ app.use(cors({
   credentials: true
 }));
 
-
-app.set('socketio', io);
 // Routes with middleware
 app.use('/api/auth', rateLimiter, authRoutes);
 app.use('/api/message', messageRoutes);
