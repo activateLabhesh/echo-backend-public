@@ -14,7 +14,7 @@ import channelroutes from './routes/channel';
 import serverroutes from './routes/servers';
 import roleroutes from './routes/roles';
 import contactroutes from "./routes/contact";
-import friendroutes from "./routes/friend";
+import friendroutes from "./routes/friend"
 
 import { rateLimiter } from './middleware/rateLimiter';
 import { setupChatSocket } from './sockets/chatSocket';
@@ -29,13 +29,20 @@ const frontend = process.env.FRONTEND_URL || "http://localhost:3000"
 
 const io = new Server(httpServer, {
   cors: {
-    origin: [frontend, "http://localhost:3000", "http://127.0.0.1:3000"],
+    origin: [frontend, "http://localhost:3000"],
     methods: ["GET", "POST"],
-    credentials: true,
-    allowedHeaders: ["*"]
+    credentials: true
   },
-  transports: ["polling", "websocket"],
-  allowEIO3: true
+  path: '/socket.io/',
+  transports: ['polling', 'websocket'],
+  allowEIO3: true,
+  pingTimeout: 60000,
+  pingInterval: 25000,
+  upgradeTimeout: 30000,
+  maxHttpBufferSize: 1e8,
+  allowUpgrades: true,
+  perMessageDeflate: false,
+  httpCompression: false
 });
 
 app.set('socketio', io);
@@ -48,11 +55,8 @@ setupVoiceSocket();
 app.use(express.json());
 app.use(cookieParser());
 app.use(cors({
-  origin: [frontend, "http://localhost:3000", "http://127.0.0.1:3000"],
-  credentials: true,
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept", "Origin"],
-  exposedHeaders: ["set-cookie"]
+  origin: [frontend, "http://localhost:3000"],
+  credentials: true
 }));
 
 // Routes with middleware
@@ -63,7 +67,7 @@ app.use('/api/newserver', serverroutes);
 app.use('/api/channel', channelroutes);
 app.use('/api/roles', roleroutes);
 app.use('/api/contact', contactroutes);
-app.use('/api/friends',friendroutes);
+app.use('/api/friends',friendroutes)
 // Health check endpoint
 app.get('/', (_req: Request, res: Response) => {
   res.json({ message: 'Hello from echo-backend!', status: 'healthy' });
