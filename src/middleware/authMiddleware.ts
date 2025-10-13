@@ -16,7 +16,10 @@ export interface AuthenticatedRequest extends Request {
 
 export const authenticate = (req: Request, res: Response, next: NextFunction): void => {
 let token: string | undefined;
-
+  console.log('=== AUTH MIDDLEWARE HIT ===');
+  console.log('URL:', req.url);
+  console.log('Method:', req.method);
+  
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')){
       token = authHeader.split(' ')[1];
@@ -26,6 +29,7 @@ let token: string | undefined;
   }  
    
   if (!token) {
+    console.log('No token provided');
     res.status(401).json({ message: 'No token provided' });
     return;
   }
@@ -33,14 +37,17 @@ let token: string | undefined;
     const payload = jwt.verify(token, JWT_SECRET) as JwtPayload;
     
     if (!payload.email) {
+      console.log('Token missing email');
       res.status(401).json({ message: 'Authentication failed: Token is missing required information.' });
       return;
     }
     
+    console.log('Auth successful for user:', payload.sub);
     (req as AuthenticatedRequest).user = payload;
     (req as AuthenticatedRequest).userEmail = payload.email;
     next();
   } catch (err) {
+    console.log('Token verification failed:', err);
     res.status(403).json({ message: 'Invalid token' });
     return;
   }

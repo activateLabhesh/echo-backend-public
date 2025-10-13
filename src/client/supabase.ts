@@ -22,6 +22,9 @@ export const supabase = createClient(
   {
     auth: {
       persistSession: true
+    },
+    global: {
+      fetch: (...args) => fetch(...args)
     }
   }
 );
@@ -33,6 +36,9 @@ export const supabaseAdmin = createClient(
   {
     auth: {
       persistSession: true
+    },
+    global: {
+      fetch: (...args) => fetch(...args)
     }
   }
 );
