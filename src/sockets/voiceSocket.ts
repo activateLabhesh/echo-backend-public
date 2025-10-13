@@ -256,7 +256,7 @@ export function setupVoiceSocket() {
   };
 
   io.on('connection', (socket) => {
-    console.log(`User connected for voice: ${socket.id}`);
+    console.log(`Voice Socket: User connected - ${socket.id}`);
 
     // Initialize connection state for the socket
     const initializeConnectionState = (userId: string, channelId: string) => {
@@ -287,6 +287,7 @@ export function setupVoiceSocket() {
         updateActivity();
         
         const userId = getUserIdFromSocketId(socket.id);
+        
         if (!userId) {
           const error = VoiceErrorHandler.createError(
             VoiceErrorCode.AUTHENTICATION_FAILED,
@@ -376,6 +377,7 @@ export function setupVoiceSocket() {
             isRecording: state?.recordingState?.isRecording || false
           };
         });
+        
         socket.emit('voice_roster', { channelId, members: roster });
         
       } catch (error) {

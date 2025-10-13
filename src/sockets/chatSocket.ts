@@ -23,17 +23,15 @@ export const getIO = (): Server => {
 
 export const setupChatSocket = (io: Server) => {
   io.on("connection", (socket: Socket) => { 
-    console.log(`User connected for chat: ${socket.id}`);
-
-
+    console.log(`Chat Socket: User connected - ${socket.id}`);
 
     // The frontend sends the userId via socket.auth 
     const userId = socket.handshake.auth.userId;
     if (userId) {
       userSocketMap.set(userId, socket.id);
       console.log(`User ${userId} registered with socket ${socket.id}`);
-      // Also log all currently connected users for debugging
-      console.log("Currently connected users:", Array.from(userSocketMap.keys()));
+    } else {
+      console.warn(`No userId in handshake.auth for socket ${socket.id}`);
     }
 
     // chat for channel 
