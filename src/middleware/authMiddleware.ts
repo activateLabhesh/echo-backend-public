@@ -15,12 +15,11 @@ export interface AuthenticatedRequest extends Request {
 }
 
 export const authenticate = (req: Request, res: Response, next: NextFunction): void => {
+let token: string | undefined;
   console.log('=== AUTH MIDDLEWARE HIT ===');
   console.log('URL:', req.url);
   console.log('Method:', req.method);
   
-  let token: string | undefined;
-
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')){
       token = authHeader.split(' ')[1];
@@ -34,7 +33,6 @@ export const authenticate = (req: Request, res: Response, next: NextFunction): v
     res.status(401).json({ message: 'No token provided' });
     return;
   }
-  
   try {
     const payload = jwt.verify(token, JWT_SECRET) as JwtPayload;
     

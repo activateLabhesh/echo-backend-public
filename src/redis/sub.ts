@@ -1,7 +1,7 @@
 import { createClient } from 'redis';
 import { Server } from 'socket.io';
 
-const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
+const redisUrl = process.env.REDIS_URL;
 const sub = createClient({ url: redisUrl });
 sub.connect().catch(console.error);
 

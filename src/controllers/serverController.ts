@@ -2,19 +2,8 @@ import { Request,Response } from 'express';
 import { supabase } from '../client/supabase';
 import { AuthenticatedRequest } from '../middleware/authMiddleware';
 import {v4} from 'uuid';
-import { error } from 'console';
 import { RequestWithBusboy } from '../middleware/busboyMiddleware';
 
-
-/**
- * Handles the creation of a new server.
- * This involves:
- * 1. Uploading an icon to Supabase Storage.
- * 2. Finding the user's ID from their email.
- * 3. Calling a single database RPC to create the server and all its
- * related resources (member, channel, roles) in one transaction.
- * 4. Fetching and returning the complete server object.
- */
 export const screation = async (req: AuthenticatedRequest, res: Response): Promise<void>=> {
   const { name } = req.body;
   const user = req.user;

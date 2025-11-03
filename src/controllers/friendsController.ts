@@ -254,43 +254,22 @@ export const search_friends = async (req: AuthenticatedRequest, res: Response): 
     try {
         // First, get all friend IDs
         const { data: friendsData, error: friendsError } = await supabase
-            .from('friends')
-            .select('user1_id, user2_id')
-            .eq('status', 'accepted')
-            .or(`user1_id.eq.${userId},user2_id.eq.${userId}`);
+            .from('users')
+            .select('id')
+            .eq('username', query)
+            .single()
 
         if (friendsError) {
-            console.error("Error fetching friend relationships:", friendsError);
-            res.status(500).json({ message: "Failed to retrieve friend list." });
+            console.error("Error fetching the user:", friendsError);
+            res.status(500).json({ message: "Failed to retrieve the user." });
             return;
         }
 
-        const friendIds = friendsData.map(f => f.user1_id === userId ? f.user2_id : f.user1_id);
-
-        if (friendIds.length === 0) {
+        if (friendsData.id.length === 0) {
             res.status(404).json({ message: "No friend found." });
             return;
         }
-
-        // Then, search within those friends
-        const { data, error } = await supabase
-            .from('users')
-            .select('id, username, fullname, avatar_url, status')
-            .in('id', friendIds)
-            .or(`username.ilike.%${query}%,fullname.ilike.%${query}%`);
-
-        if (error) {
-            console.error("Error searching friends:", error);
-            res.status(500).json({ message: "Failed to search friends." });
-            return;
-        }
-
-        if (!data || data.length === 0) {
-            res.status(200).json({ message: "No friend found." });
-            return;
-        }
-
-        res.status(200).json(data);
+        res.status(200).json(friendsData);
 
     } catch (error) {
         res.status(500).json({ message: "An unexpected error occurred." });
