@@ -734,14 +734,25 @@ export const kickMember = async (req: AuthenticatedRequest, res: Response): Prom
       return;
     }
 
-    // Remove member from server
-    const { error: deleteError } = await supabase
+    // remove from user_roles 
+    const { error: roleError } = await supabase
+      .from('user_roles')
+      .delete()
+      .eq('user_id', targetUserId);
+
+    if (roleError) {
+      console.error('Error removing user roles:', roleError);
+    }
+
+    //remove from server_members (parent table)
+    const { error: memberError } = await supabase
       .from('server_members')
       .delete()
       .eq('server_id', serverId)
       .eq('user_id', targetUserId);
 
-    if (deleteError) {
+    if (memberError) {
+      console.error('Error removing server member:', memberError);
       res.status(500).json({ error: 'Failed to kick member' });
       return;
     }
@@ -789,7 +800,18 @@ export const banMember = async (req: AuthenticatedRequest, res: Response): Promi
       return;
     }
 
-    // Remove member and add to banned list
+    // Remove member and add to banned list - COMPLETE CLEANUP
+    // remove from user_roles (child table) - this is critical for preventing re-add issues
+    const { error: banRoleError } = await supabase
+      .from('user_roles')
+      .delete()
+      .eq('user_id', targetUserId);
+
+    if (banRoleError) {
+      console.error('Error removing user roles during ban:', banRoleError);
+    }
+
+    //remove from server_members (parent table)
     const { error: deleteError } = await supabase
       .from('server_members')
       .delete()
@@ -1315,9 +1337,26 @@ export const addUserToServer = async (req: AuthenticatedRequest, res: Response):
       .eq('user_id', userData.id)
       .single();
 
+    if (memberCheckError && memberCheckError.code !== 'PGRST116') {
+      console.error('Error checking existing membership:', memberCheckError);
+      res.status(500).json({ error: 'Failed to check membership status' });
+      return;
+    }
+
     if (existingMember) {
       res.status(400).json({ error: 'User is already a member of this server' });
       return;
+    }
+
+    // SAFETY CHECK: Clean up any orphaned user_roles before adding
+    // prevents duplicate key errors from incomplete previous removals
+    const { error: cleanupError } = await supabase
+      .from('user_roles')
+      .delete()
+      .eq('user_id', userData.id);
+
+    if (cleanupError) {
+      console.error('Error cleaning up orphaned user_roles:', cleanupError);
     }
 
     // Add user to server using the RPC function
@@ -1327,7 +1366,11 @@ export const addUserToServer = async (req: AuthenticatedRequest, res: Response):
     });
 
     if (rpcError) {
-      res.status(500).json({ error: 'Failed to add user to server' });
+      console.error('RPC Error adding user to server:', rpcError);
+      res.status(500).json({ 
+        error: 'Failed to add user to server',
+        details: rpcError.message 
+      });
       return;
     }
 
