@@ -280,6 +280,51 @@ export const updatePassword = async (req: Request, res: Response):Promise<void> 
   return
 };
 
+// change password for logged-in users
+export const changePassword = async (req: Request, res: Response): Promise<void> => {
+
+  const authHeader = req.headers['authorization'];
+  const headerToken = authHeader?.startsWith('Bearer ') ? authHeader.split(' ')[1] : undefined;
+  const cookieToken = req.cookies?.access_token;
+  const access_token = headerToken || cookieToken;
+
+  const { new_password } = req.body;
+
+  if (!access_token || !new_password) {
+    res.status(400).json({ message: 'Access token and new password are required' });
+    return;
+  }
+
+  // decode token to get user id (sub)
+  let userId: string | undefined;
+  try {
+    const decoded: any = jwt.decode(access_token);
+    userId = decoded?.sub;
+    if (!userId) throw new Error('sub missing');
+  } catch (err) {
+    res.status(401).json({ message: 'Invalid access token' });
+    return;
+  }
+
+  try {
+    const { data, error } = await supabaseAdmin.auth.admin.updateUserById(userId, {
+      password: new_password,
+    });
+
+    if (error) {
+      console.error('Admin update error', error);
+      res.status(400).json({ message: error.message || 'Failed to change password' });
+      return;
+    }
+
+    res.status(200).json({ message: 'Password changed successfully' });
+    return;
+  } catch (err: any) {
+    console.error('changePassword error', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
 export const authorize = async (req: Request, res: Response): Promise<void> => {
   const authHeader = req.headers['authorization'];
   const accessToken = authHeader?.split(' ')[1];
