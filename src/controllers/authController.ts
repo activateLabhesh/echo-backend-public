@@ -47,6 +47,9 @@ export const register = async (req: Request, res: Response): Promise <void> => {
   const { data: signUpData, error } = await supabase.auth.signUp({
     email,
     password,
+    options: {
+      emailRedirectTo: `${process.env.FRONTEND_URL || 'https://echo-web-lemon.vercel.app'}/auth/callback?next=/login`,
+    },
   });
 
   if (error || !signUpData?.user?.id) {
@@ -231,7 +234,7 @@ export const sendResetPasswordEmail = async (req: Request, res: Response):Promis
   }
 
   const { error } = await supabase.auth.resetPasswordForEmail(email, {
-    redirectTo: `${process.env.FRONTEND_URL}/reset-password`, 
+    redirectTo: `${process.env.FRONTEND_URL || 'https://echo-web-lemon.vercel.app'}/auth/reset-password`, 
   });
 
   if (error) {
@@ -243,7 +246,7 @@ export const sendResetPasswordEmail = async (req: Request, res: Response):Promis
   return
 };
 
-//update password 
+//update password using reset session
 export const updatePassword = async (req: Request, res: Response):Promise<void> => {
   const authHeader = req.headers['authorization'];
   const access_token = authHeader?.split(' ')[1];
@@ -257,20 +260,22 @@ export const updatePassword = async (req: Request, res: Response):Promise<void> 
   //extract user id from the token
   let userId: string;
   try {
-    const decoded: any = jwt.decode(access_token);
-    userId = decoded.sub;
+    const { data: userData, error } = await supabase.auth.getUser(access_token);
+    if (error || !userData?.user) {
+      res.status(400).json({ message: 'Invalid access token' });
+      return;
+    }
+    userId = userData.user.id;
   } catch (err) {
     res.status(400).json({ message: 'Invalid access token' });
     return;
   }
 
-  //update passwrd using admin 
+  //update password using admin 
   const { data, error } = await supabaseAdmin.auth.admin.updateUserById(userId, {
     password: new_password,
   });
 
-  // console.log('Admin API response:', { data, error });
-  
   if (error) {
     res.status(400).json({ message: error.message });
     return
