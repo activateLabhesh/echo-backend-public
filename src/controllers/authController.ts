@@ -317,3 +317,179 @@ export const authorize = async (req: Request, res: Response): Promise<void> => {
     res.status(500).json({ message: 'Internal server error during authorization.' });
   }
 };
+
+//handle OAuth user (Google, etc.)
+export const handleOAuthUser = async (req: Request, res: Response): Promise<void> => {
+  const isMobileApp = req.headers['x-client-type'] === 'Mobile';
+  const authHeader = req.headers.authorization;
+  const access_token = authHeader?.split(' ')[1];
+
+  if (!access_token) {
+    res.status(401).json({ message: 'Access token required' });
+    return;
+  }
+
+  try {
+    // Get user from Supabase auth
+    const { data: userData, error: userError } = await supabase.auth.getUser(access_token);
+
+    if (userError || !userData?.user) {
+      console.error('OAuth user validation error:', userError);
+      res.status(401).json({ message: 'Invalid access token' });
+      return;
+    }
+
+    const supabaseUser = userData.user;
+    // console.log('OAuth user:', supabaseUser.email);
+
+    // Check if user exists in our users table by ID
+    let { data: existingUser, error: fetchError } = await supabaseAdmin
+      .from('users')
+      .select('id, email, username, fullname, avatar_url, bio, date_of_birth, status, created_at')
+      .eq('id', supabaseUser.id)
+      .maybeSingle();
+
+    if (fetchError) {
+      console.error('Error fetching user by ID:', fetchError);
+    }
+
+    // If not found by ID, check by email (user might have registered with email/password before)
+    if (!existingUser && supabaseUser.email) {
+      const { data: emailUser, error: emailError } = await supabaseAdmin
+        .from('users')
+        .select('id, email, username, fullname, avatar_url, bio, date_of_birth, status, created_at')
+        .eq('email', supabaseUser.email)
+        .maybeSingle();
+
+      if (emailError) {
+        console.error('Error fetching user by email:', emailError);
+      }
+
+      if (emailUser) {
+        // console.log('Found existing user by email, updating ID to link OAuth account');
+        
+        // Update the existing user's ID to match the new Supabase OAuth ID
+        const { error: updateError } = await supabaseAdmin
+          .from('users')
+          .update({ id: supabaseUser.id })
+          .eq('email', supabaseUser.email);
+
+        if (updateError) {
+          console.error('Error linking OAuth account:', updateError);
+          // If we can't update the ID, just use the existing user data
+          existingUser = emailUser;
+        } else {
+          // Fetch the updated user
+          const { data: updatedUser } = await supabaseAdmin
+            .from('users')
+            .select('id, email, username, fullname, avatar_url, bio, date_of_birth, status, created_at')
+            .eq('id', supabaseUser.id)
+            .maybeSingle();
+          
+          existingUser = updatedUser || emailUser;
+          // console.log('OAuth account linked successfully for:', emailUser.username);
+        }
+      }
+    }
+
+    let userDetails = existingUser;
+
+    // If user doesn't exist, create them
+    if (!existingUser) {
+      // console.log('Creating new OAuth user:', supabaseUser.email);
+
+      // Generate username from email or OAuth name
+      let username = supabaseUser.user_metadata?.full_name?.replace(/\s+/g, '_').toLowerCase() 
+                     || supabaseUser.email?.split('@')[0] 
+                     || `user_${Date.now()}`;
+
+      // Check if username already exists
+      const { data: usernameCheck } = await supabaseAdmin
+        .from('users')
+        .select('id')
+        .eq('username', username)
+        .maybeSingle();
+
+      // If username exists, append random numbers
+      if (usernameCheck) {
+        username = `${username}_${Math.floor(Math.random() * 9999)}`;
+      }
+
+      const newUser = {
+        id: supabaseUser.id,
+        email: supabaseUser.email,
+        username: username,
+        fullname: supabaseUser.user_metadata?.full_name || '',
+        avatar_url: supabaseUser.user_metadata?.avatar_url || null,
+        status: 'offline',
+        bio: '',
+        date_of_birth: null,
+      };
+
+      const { error: insertError } = await supabaseAdmin
+        .from('users')
+        .insert([newUser]);
+
+      if (insertError) {
+        console.error('Error creating OAuth user:', insertError);
+        res.status(500).json({ message: 'Failed to create user record' });
+        return;
+      }
+
+      // Fetch the newly created user
+      const { data: newUserData } = await supabaseAdmin
+        .from('users')
+        .select('id, email, username, fullname, avatar_url, bio, date_of_birth, status, created_at')
+        .eq('id', supabaseUser.id)
+        .maybeSingle();
+
+      userDetails = newUserData;
+      // console.log('OAuth user created successfully:', username);
+    } else {
+      // console.log('Existing user found:', existingUser.username);
+      
+      // Optionally update avatar if user doesn't have one
+      if (!existingUser.avatar_url && supabaseUser.user_metadata?.avatar_url) {
+        await supabaseAdmin
+          .from('users')
+          .update({ avatar_url: supabaseUser.user_metadata.avatar_url })
+          .eq('id', supabaseUser.id);
+        
+        userDetails = { ...existingUser, avatar_url: supabaseUser.user_metadata.avatar_url };
+      }
+    }
+
+    // Get refresh token from session
+    const { data: sessionData } = await supabase.auth.getSession();
+    const refresh_token = sessionData?.session?.refresh_token || '';
+
+    if (isMobileApp) {
+      res.status(200).json({
+        message: 'OAuth login successful',
+        user: userDetails,
+        accessToken: access_token,
+        refreshToken: refresh_token,
+        isNewUser: !existingUser,
+      });
+    } else {
+      res.cookie('access_token', access_token, cookieOptions);
+      if (refresh_token) {
+        res.cookie('refresh_token', refresh_token, {
+          ...cookieOptions,
+          maxAge: 60 * 60 * 24 * 30,
+        });
+      }
+      res.status(200).json({
+        message: 'OAuth login successful',
+        user: userDetails,
+        accessToken: access_token,
+        refreshToken: refresh_token,
+        isNewUser: !existingUser,
+      });
+    }
+
+  } catch (err: any) {
+    console.error('OAuth handler error:', err);
+    res.status(500).json({ message: 'Server error during OAuth login' });
+  }
+};
