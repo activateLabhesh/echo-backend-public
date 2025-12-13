@@ -26,12 +26,26 @@ import {setIO} from "./sockets/chatSocket";
 const app = express();
 const httpServer = http.createServer(app);
 
-const frontend = process.env.FRONTEND_URL || "http://localhost:3000"
+// Parse allowed origins from env (supports multiple comma-separated origins)
+const allowedOrigins = process.env.FRONTEND_URL?.split(',').map(url => url.trim()) || [
+  'http://localhost:3000',
+  'https://echo-web-lemon.vercel.app',
+  'https://echo.ieeecsvit.com'
+];
 
 const io = new Server(httpServer, {
   cors: {
-    origin: [frontend, "http://localhost:3000"],
-    methods: ["GET", "POST"],
+    origin: (origin, callback) => {
+      // Allow requests with no origin (mobile apps, Postman, etc.)
+      if (!origin) return callback(null, true);
+      
+      if (allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     credentials: true
   },
   path: '/socket.io/',
@@ -56,9 +70,23 @@ setupVoiceSocket();
 app.use(express.json());
 app.use(cookieParser());
 app.use(cors({
-  origin: [frontend, "http://localhost:3000"],
-  credentials: true
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, Postman, etc.)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Client-Type'],
 }));
+
+// Handle preflight requests
+app.options('*', cors());
 
 // Routes with middleware
 app.use('/api/auth', rateLimiter, authRoutes);
