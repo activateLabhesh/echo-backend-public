@@ -87,9 +87,6 @@ const corsOptions: cors.CorsOptions = {
 
 app.use(cors(corsOptions));
 
-// Handle preflight requests for all routes
-app.options('*', cors(corsOptions));
-
 // Routes with middleware
 app.use('/api/auth', rateLimiter, authRoutes);
 app.use('/api/message', messageRoutes);
