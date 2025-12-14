@@ -300,133 +300,124 @@ export const inviteToServer = async(req:Request, res:Response):Promise<any> =>{
 
 
 
-export const joinWithInvite = async(req: AuthenticatedRequest, res: Response): Promise<void> => {
+export const joinWithInvite = async (
+  req: AuthenticatedRequest,
+  res: Response
+): Promise<void> => {
   const { inviteCode } = req.body;
-  const email_Id = req.user?.email;
   const userId = req.user?.sub;
 
-  if (!email_Id) {
-    res.status(401).json({ error: 'Authentication error: User email not found.' });
-    return;
-  }
-
   if (!userId) {
-    res.status(401).json({ error: 'Authentication required' });
+    res.status(401).json({
+      success: false,
+      code: "AUTH_REQUIRED",
+      message: "Please login to join a server."
+    });
     return;
   }
 
   if (!inviteCode) {
-    res.status(400).json({ error: 'Invite code is required' });
+    res.status(200).json({
+      success: false,
+      code: "INVITE_MISSING",
+      message: "Invite code or link is required."
+    });
     return;
   }
 
-  // Extract UUID from invite URL or use directly if it's already a UUID
-  let inviteId: string;
-  if (inviteCode.includes('/invite/')) {
-    // Extract UUID from URL like: http://localhost:3000/invite/f7bff380-6d86-4f83-9388-f89143b3adc1
-    const urlParts = inviteCode.split('/invite/');
-    inviteId = urlParts[1];
-  } else {
-    // Assume it's already a UUID
-    inviteId = inviteCode;
-  }
-
-  console.log('Extracted invite ID:', inviteId);
+  let inviteId = inviteCode.includes("/invite/")
+    ? inviteCode.split("/invite/")[1]
+    : inviteCode;
 
   if (!inviteId) {
-    res.status(400).json({ error: 'Invalid invite code format' });
+    res.status(200).json({
+      success: false,
+      code: "INVITE_INVALID",
+      message: "Invalid invite link."
+    });
     return;
   }
+
   try {
-    console.log('Looking up invite in database...');
-    const { data: invite_data, error: queryerror } = await supabase
-        .from('invites')
-        .select('*')
-        .eq('id', inviteId)
-        .single();
-    
-    const invite = invite_data as Invite | null;
-    
+    const { data: invite } = await supabase
+      .from("invites")
+      .select("*")
+      .eq("id", inviteId)
+      .single();
+
     if (!invite) {
-      res.status(404).json({ error: "No such invite found" });
-      return;
-    }
-    
-    if (queryerror) {
-      console.log(`Error in querying from invites table: ${queryerror}`);
-      res.status(500).json({ error: "Server Error in querying from invites" });
+      res.status(200).json({
+        success: false,
+        code: "INVITE_NOT_FOUND",
+        message: "This invite link does not exist."
+      });
       return;
     }
 
-    console.log('Found invite:', invite);
-
-    // Check if the limit is already over or expired invite or is still valid
-    if (invite && invite.use_limit && invite.use_limit <= invite.people_joined) {
-      res.status(400).json({ error: "More people cannot join using this invite" });
-      return;
-    }
-    
     if (invite.expiry && new Date(invite.expiry) < new Date()) {
-      res.status(400).json({ error: "This invite has expired" });
+      res.status(200).json({
+        success: false,
+        code: "INVITE_EXPIRED",
+        message: "This invite link has expired."
+      });
       return;
     }
 
-    // Check if the user is already a part of this server
-    const { data: existingMember, error: memberError } = await supabase
+    if (
+      invite.use_limit &&
+      invite.people_joined >= invite.use_limit
+    ) {
+      res.status(200).json({
+        success: false,
+        code: "INVITE_LIMIT_REACHED",
+        message: "This invite link has reached its usage limit."
+      });
+      return;
+    }
+
+    const { data: existingMember } = await supabase
       .from("server_members")
       .select("user_id")
       .eq("server_id", invite.server_id)
       .eq("user_id", userId)
       .maybeSingle();
 
-    if (memberError) {
-      console.log("Error checking membership:", memberError);
-      res.status(500).json({ error: "Server error while checking membership" });
-      return;
-    }
-
     if (existingMember) {
-      res.status(400).json({ error: "User is already a member of this server" });
+      res.status(200).json({
+        success: false,
+        code: "ALREADY_MEMBER",
+        message: "You are already a member of this server."
+      });
       return;
     }
 
-    console.log('Adding user to server using RPC...');
-
-    // Use the RPC function to add user to server (same as regular joinServer)
-    const { data: newMember, error: rpcError } = await supabase.rpc('join_server_and_assign_member_role', {
+    await supabase.rpc("join_server_and_assign_member_role", {
       p_server_id: invite.server_id,
-      p_user_id: userId,
+      p_user_id: userId
     });
 
-    if (rpcError) {
-      console.error('RPC `join_server_and_assign_member_role` error:', rpcError);
-      res.status(500).json({ error: "Could not add user to server", details: rpcError.message });
-      return;
-    }
-
-    // Update invite usage count
-    const { error: updateError } = await supabase
+    await supabase
       .from("invites")
       .update({ people_joined: invite.people_joined + 1 })
       .eq("id", inviteId);
 
-    if (updateError) {
-      console.log("Error updating invite usage:", updateError);
-    }
-
-    console.log('Successfully joined server via invite');
-
-    res.status(201).json({
-      message: "Successfully joined the server via invite",
-      server_id: invite.server_id,
-      data: newMember?.[0]
+    res.status(200).json({
+      success: true,
+      message: "Successfully joined the server.",
+      data: {
+        server_id: invite.server_id
+      }
     });
 
-  } catch (e) {
-    console.log(`Error in joining server with invite: ${e}`);
-    res.status(500).json({ error: 'Server Error' });
+  } catch (err) {
+    console.error(err);
+    res.status(200).json({
+      success: false,
+      code: "SERVER_ERROR",
+      message: "Something went wrong. Please try again later."
+    });
   }
-}
+};
 
 // Update server details (name, icon, region)
 export const updateServer = async (req: AuthenticatedRequest, res: Response): Promise<void> => {

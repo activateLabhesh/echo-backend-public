@@ -48,7 +48,7 @@ export const register = async (req: Request, res: Response): Promise <void> => {
     email,
     password,
     options: {
-      emailRedirectTo: `${process.env.FRONTEND_URL || 'https://echo-web-lemon.vercel.app'}/auth/callback?next=/login`,
+      emailRedirectTo: `https://echo.ieeecsvit.com/auth/callback?next=/login`,
     },
   });
 
