@@ -48,7 +48,7 @@ export const register = async (req: Request, res: Response): Promise <void> => {
     email,
     password,
     options: {
-      emailRedirectTo: `${process.env.FRONTEND_URL || 'https://echo-web-lemon.vercel.app'}/auth/callback?next=/login`,
+      emailRedirectTo: `https://echo.ieeecsvit.com/auth/callback?next=/login`,
     },
   });
 
@@ -234,7 +234,7 @@ export const sendResetPasswordEmail = async (req: Request, res: Response):Promis
   }
 
   const { error } = await supabase.auth.resetPasswordForEmail(email, {
-    redirectTo: `${process.env.FRONTEND_URL || 'https://echo-web-lemon.vercel.app'}/auth/reset-password`, 
+    redirectTo: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/reset-password`, 
   });
 
   if (error) {
