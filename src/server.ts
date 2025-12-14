@@ -57,7 +57,8 @@ app.use(express.json());
 app.use(cookieParser());
 app.use(cors({
   origin: [frontend, "http://localhost:3000"],
-  credentials: true
+  credentials: true,
+  allowedHeaders: ["Content-Type", "Authorization"]
 }));
 
 // Routes with middleware
