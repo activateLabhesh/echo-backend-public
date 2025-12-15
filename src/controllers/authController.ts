@@ -2,18 +2,6 @@ import { Request, Response } from 'express';
 import {supabase,supabaseAdmin} from '../client/supabase'
 import jwt from 'jsonwebtoken';
 
-// Helper function to get the correct frontend URL based on request origin
-const getFrontendUrl = (req: Request): string => {
-  const origin = req.headers.origin;
-  const allowedOrigins = process.env.FRONTEND_URL?.split(',').map(url => url.trim()) || [];
-  
-  if (origin && allowedOrigins.includes(origin)) {
-    return origin;
-  }
-  // Default to first allowed origin or fallback
-  return allowedOrigins[0] || 'https://echo.ieeecsvit.com';
-};
-
 // Access token expires in 1 hour (matches Supabase JWT expiration)
 const ACCESS_TOKEN_MAX_AGE = 60 * 60; // 1 hour in seconds
 // Refresh token expires in 30 days

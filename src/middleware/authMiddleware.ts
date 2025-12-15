@@ -2,15 +2,15 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { supabase } from '../client/supabase';
 
-const ACCESS_TOKEN_MAX_AGE = 60 * 60; 
-const REFRESH_THRESHOLD = 5 * 60; 
-const REFRESH_TOKEN_MAX_AGE = 60 * 60 * 24 * 30; 
+const ACCESS_TOKEN_MAX_AGE = 60 * 60; // 1 hour
+const REFRESH_THRESHOLD = 5 * 60; // refresh if <5min left
+const REFRESH_TOKEN_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 
 interface JwtPayload {
-  sub: string;       
-  email?: string;    
-  exp?: number;      
-  iat?: number;      
+  sub: string;
+  email?: string;
+  exp?: number;
+  iat?: number;
 }
 
 export interface AuthenticatedRequest extends Request {
@@ -20,9 +20,8 @@ export interface AuthenticatedRequest extends Request {
 
 export const authenticate = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   const authReq = req as AuthenticatedRequest;
-  console.log("URL:", req.url);
-  console.log("Method:", req.method);
 
+  
   let token: string | undefined;
   let refreshToken: string | undefined;
 
@@ -36,7 +35,7 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
     token = req.cookies.access_token;
   }
 
-  // Refresh
+  // Refresh token
   if (isMobileApp) {
     refreshToken = req.body?.refresh_token || (req.headers["x-refresh-token"] as string);
   } else if (req.cookies?.refresh_token) {
@@ -44,12 +43,11 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
   }
 
   if (!token) {
-    console.log("No token provided");
     res.status(401).json({ message: "No token provided" });
     return;
   }
 
-  // Validate token with Supabase
+  // Validate the token with Supabase
   try {
     const { data: userData, error: verifyError } = await supabase.auth.getUser(token);
 
@@ -57,7 +55,7 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
       throw new Error("Invalid or expired token");
     }
 
-    // Decode JWT for expiration (Supabase does not provide exp in getUser)
+    // Decode to extract exp
     const decoded: any = jwt.decode(token);
     const exp = decoded?.exp;
 
@@ -77,16 +75,17 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
       exp,
     };
 
-    // token will expire soon (<5 min): auto-refresh
+    // Auto-refresh if token expiring soon
     if (timeUntilExpiry < REFRESH_THRESHOLD && timeUntilExpiry > 0 && refreshToken) {
       console.log(`Token expiring in ${timeUntilExpiry}s → auto-refreshing...`);
 
-      const { data, error } = await supabase.auth.refreshSession({ refresh_token: refreshToken });
+      const { data, error } = await supabase.auth.refreshSession({
+        refresh_token: refreshToken,
+      });
 
       if (!error && data.session) {
         const { access_token: newAccessToken, refresh_token: newRefreshToken } = data.session;
 
-        // Update cookies or headers
         if (isMobileApp) {
           res.setHeader("X-New-Access-Token", newAccessToken);
           res.setHeader("X-New-Refresh-Token", newRefreshToken || "");
@@ -115,24 +114,21 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
       }
     }
 
-    // Attach user
     authReq.user = payload;
     authReq.userEmail = payload.email;
 
-    console.log("Auth OK →", payload.sub);
     next();
     return;
+  } catch (err) {
+    console.log("Token check failed → attempting refresh...");
 
-  } catch (err: any) {
-    console.log("Token validation failed → attempting refresh...");
-
-    // Token expired → attempt full refresh
     if (refreshToken) {
       try {
-        const { data, error } = await supabase.auth.refreshSession({ refresh_token: refreshToken });
+        const { data, error } = await supabase.auth.refreshSession({
+          refresh_token: refreshToken,
+        });
 
         if (error || !data.session) {
-          console.log("Refresh failed:", error?.message);
           res.status(401).json({
             message: "Session expired. Please log in again.",
             code: "SESSION_EXPIRED",
@@ -143,13 +139,13 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
         const { access_token: newAccessToken, refresh_token: newRefreshToken } = data.session;
 
         const decoded: any = jwt.decode(newAccessToken);
+
         const newPayload: JwtPayload = {
           sub: decoded.sub,
           email: decoded.email,
           exp: decoded.exp,
         };
 
-        // Set new tokens
         if (isMobileApp) {
           res.setHeader("X-New-Access-Token", newAccessToken);
           res.setHeader("X-New-Refresh-Token", newRefreshToken || "");
@@ -174,16 +170,12 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
           }
         }
 
-        console.log("Token refreshed after expiry.");
-
         authReq.user = newPayload;
         authReq.userEmail = newPayload.email;
 
         next();
         return;
-
       } catch (refreshError) {
-        console.log("Refresh error:", refreshError);
         res.status(401).json({
           message: "Session expired. Please log in again.",
           code: "SESSION_EXPIRED",
@@ -191,8 +183,7 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
         return;
       }
     }
-    //invalid session if no token
-    console.log("No refresh token → invalid session");
+
     res.status(403).json({ message: "Invalid token" });
     return;
   }
