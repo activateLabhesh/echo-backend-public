@@ -24,7 +24,9 @@ import {
   deleteInvite,
   createServerInvite,
   searchUsersByUsername,
-  addUserToServer
+  addUserToServer,
+  getBannedUsers,
+  unbanUser
 } from '../controllers/serverController';
 import { busboyMiddleware } from '../middleware/busboyMiddleware';
 
@@ -48,6 +50,8 @@ router.get('/:serverId/members/voice-presence', authenticate, getServerMembersWi
 router.post('/:serverId/members', authenticate, addUserToServer);
 router.delete('/:serverId/members/:userId/kick', authenticate, kickMember);
 router.post('/:serverId/members/:userId/ban', authenticate, banMember);
+router.delete('/:serverId/members/:userId/unban', authenticate, unbanUser);
+router.get('/:serverId/bans', authenticate, getBannedUsers);
 router.post('/:serverId/leave', authenticate, leaveServer);
 router.post('/:serverId/transfer-ownership', authenticate, transferOwnership);
 
