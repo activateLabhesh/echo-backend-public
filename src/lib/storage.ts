@@ -19,19 +19,19 @@ const S3_CONFIG = {
 // Check and create buckets if they don't exist
 export const checkBucketConnection = async () => {
   try {
-    console.log('🔍 Checking storage connection...');
+    console.log('Checking storage connection...');
     const { data: buckets, error } = await supabaseAdmin.storage.listBuckets();
     
     if (error) {
-      console.error('❌ Error listing buckets:', error.message);
+      console.error('Error listing buckets:', error.message);
       return false;
     }
     const existingBuckets = buckets?.map((b: Bucket) => b.name) || [];
-    console.log('📦 Existing buckets:', existingBuckets.join(', '));
-    console.log('✅ Storage buckets check completed');
+    console.log('Existing buckets:', existingBuckets.join(', '));
+    console.log('Storage buckets check completed');
     return true;
   } catch (error) {
-    console.error('❌ Failed to connect to storage buckets:', error);
+    console.error('Failed to connect to storage buckets:', error);
     return false;
   }
 };

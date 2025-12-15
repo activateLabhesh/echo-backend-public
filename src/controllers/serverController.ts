@@ -3,6 +3,7 @@ import { supabase } from '../client/supabase';
 import { AuthenticatedRequest } from '../middleware/authMiddleware';
 import {v4} from 'uuid';
 import { RequestWithBusboy } from '../middleware/busboyMiddleware';
+import { checkOwnerOrAdmin } from './roleController';
 
 export const screation = async (req: AuthenticatedRequest, res: Response): Promise<void>=> {
   const { name } = req.body;
@@ -75,7 +76,40 @@ export const screation = async (req: AuthenticatedRequest, res: Response): Promi
           return 
     }
 
-    // --- 4. Fetch and Return Full Server Data ---
+    // --- 4. Create Owner and Admin roles for the server ---
+    // Create Owner role
+    const { error: ownerRoleError } = await supabase
+      .from('roles')
+      .insert({
+        server_id: newServerId,
+        name: 'Owner',
+        color: '#f1c40f',
+        position: 1000,
+        role_type: 'owner',
+        is_self_assignable: false
+      });
+
+    if (ownerRoleError) {
+      console.error('Error creating owner role:', ownerRoleError);
+    }
+
+    // Create Admin role
+    const { error: adminRoleError } = await supabase
+      .from('roles')
+      .insert({
+        server_id: newServerId,
+        name: 'Admin',
+        color: '#e74c3c',
+        position: 999,
+        role_type: 'admin',
+        is_self_assignable: false
+      });
+
+    if (adminRoleError) {
+      console.error('Error creating admin role:', adminRoleError);
+    }
+
+    // --- 5. Fetch and Return Full Server Data ---
     const { data: fullServer, error: fetchError } = await supabase
       .from('servers')
       .select(`*, server_members (*), channels (*)`)
@@ -341,7 +375,17 @@ export const joinWithInvite = async (
       });
       return;
     }
+    const { data: ban } = await supabase
+  .from('server_bans')
+  .select('user_id')
+  .eq('server_id', invite.serverId)
+  .eq('user_id', userId)
+  .maybeSingle();
 
+if (ban) {
+  res.status(200).json({ error: 'You are banned from this server' });
+  return;
+}
     const { data: existingMember } = await supabase
       .from("server_members")
       .select("user_id")
@@ -613,19 +657,21 @@ export const getServerMembers = async (req: AuthenticatedRequest, res: Response)
       return;
     }
 
-    // Fetch roles for each member separately
+    // Fetch roles for each member separately - ONLY roles belonging to THIS server
     const membersWithRoles = await Promise.all(
       (members || []).map(async (member) => {
         const { data: userRoles, error: rolesError } = await supabase
           .from('user_roles')
           .select(`
-            roles (
+            roles!inner (
               id,
               name,
-              color
+              color,
+              server_id
             )
           `)
-          .eq('user_id', member.user_id);
+          .eq('user_id', member.user_id)
+          .eq('roles.server_id', serverId);
 
         return {
           ...member,
@@ -658,17 +704,19 @@ export const getServerMembers = async (req: AuthenticatedRequest, res: Response)
           .single();
 
         if (!ownerUserError && ownerUser) {
-          // Fetch owner's roles
+          // Fetch owner's roles - ONLY roles belonging to THIS server
           const { data: ownerRoles, error: ownerRolesError } = await supabase
             .from('user_roles')
             .select(`
-              roles (
+              roles!inner (
                 id,
                 name,
-                color
+                color,
+                server_id
               )
             `)
-            .eq('user_id', userId);
+            .eq('user_id', userId)
+            .eq('roles.server_id', serverId);
 
           // Add owner to the members list
           const ownerMember: any = {
@@ -713,15 +761,23 @@ export const kickMember = async (req: AuthenticatedRequest, res: Response): Prom
       return;
     }
 
-    // Only owner can kick members for now (can be enhanced with role permissions)
-    if (serverData.owner_id !== userId) {
-      res.status(403).json({ error: 'Only server owner can kick members' });
+    // Check if user is owner or admin
+    const { isOwner, isAdmin } = await checkOwnerOrAdmin(userId, serverId);
+    
+    if (!isOwner && !isAdmin) {
+      res.status(403).json({ error: 'Only server owners and admins can kick members' });
       return;
     }
 
     // Cannot kick yourself
     if (userId === targetUserId) {
       res.status(400).json({ error: 'Cannot kick yourself' });
+      return;
+    }
+
+    // Admins cannot kick the server owner
+    if (targetUserId === serverData.owner_id) {
+      res.status(403).json({ error: 'Cannot kick the server owner' });
       return;
     }
 
@@ -774,20 +830,36 @@ export const banMember = async (req: AuthenticatedRequest, res: Response): Promi
       .eq('id', serverId)
       .single();
 
+      await supabase.from('server_bans').insert({
+  server_id: serverId,
+  user_id: targetUserId,
+  banned_by: userId,
+  banned_at: new Date().toISOString()
+});
+
+
     if (serverError || !serverData) {
       res.status(404).json({ error: 'Server not found' });
       return;
     }
 
-    // Only owner can ban members for now
-    if (serverData.owner_id !== userId) {
-      res.status(403).json({ error: 'Only server owner can ban members' });
+    // Check if user is owner or admin
+    const { isOwner, isAdmin } = await checkOwnerOrAdmin(userId, serverId);
+    
+    if (!isOwner && !isAdmin) {
+      res.status(403).json({ error: 'Only server owners and admins can ban members' });
       return;
     }
 
     // Cannot ban yourself
     if (userId === targetUserId) {
       res.status(400).json({ error: 'Cannot ban yourself' });
+      return;
+    }
+
+    // Admins cannot ban the server owner
+    if (targetUserId === serverData.owner_id) {
+      res.status(403).json({ error: 'Cannot ban the server owner' });
       return;
     }
 
@@ -1229,7 +1301,7 @@ export const createServerInvite = async (req: AuthenticatedRequest, res: Respons
       message: 'Invite created successfully',
       invite: {
         ...newInvite,
-        inviteLink: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/invite/${inviteId}`
+        inviteLink: `https://echo.ieeecsvit.com/invite/${inviteId}`
       }
     });
 

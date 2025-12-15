@@ -65,7 +65,7 @@ export const register = async (req: Request, res: Response): Promise <void> => {
     email,
     password,
     options: {
-      emailRedirectTo: `${getFrontendUrl(req)}/auth/callback?next=/login`,
+      emailRedirectTo: `https://echo.ieeecsvit.com/auth/callback?next=/login`,
     },
   });
 
@@ -251,7 +251,7 @@ export const sendResetPasswordEmail = async (req: Request, res: Response):Promis
   }
 
   const { error } = await supabase.auth.resetPasswordForEmail(email, {
-    redirectTo: `${getFrontendUrl(req)}/reset-password`, 
+    redirectTo: `https://echo.ieeecsvit.com/reset-password`, 
   });
 
   if (error) {

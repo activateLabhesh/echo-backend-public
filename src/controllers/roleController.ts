@@ -4,6 +4,750 @@ import { getPermissionsByRoleId } from '../middleware/permissionMiddleware';
 import { AuthenticatedRequest } from '../middleware/authMiddleware';
 import {v4 as uuidv4} from 'uuid'
 
+// Helper function to check if user is owner or admin
+export async function checkOwnerOrAdmin(userId: string, serverId: string): Promise<{ isOwner: boolean; isAdmin: boolean }> {
+  // Check if user is server owner
+  const { data: server } = await supabase
+    .from('servers')
+    .select('owner_id')
+    .eq('id', serverId)
+    .single();
+
+  const isOwner = server?.owner_id === userId;
+
+  // Check if user has admin role
+  const { data: userRoles } = await supabase
+    .from('user_roles')
+    .select(`
+      role_id,
+      roles!inner(role_type, server_id)
+    `)
+    .eq('user_id', userId);
+
+  const isAdmin = userRoles?.some((ur: any) => 
+    ur.roles?.server_id === serverId && ur.roles?.role_type === 'admin'
+  ) || false;
+
+  return { isOwner, isAdmin };
+}
+
+// Helper function to check if user is a member or owner of server
+async function checkMembershipOrOwnership(userId: string, serverId: string): Promise<boolean> {
+  // Check if user is server owner
+  const { data: server } = await supabase
+    .from('servers')
+    .select('owner_id')
+    .eq('id', serverId)
+    .single();
+
+  if (server?.owner_id === userId) {
+    return true;
+  }
+
+  // Check if user is a member - server_members has composite primary key (user_id, server_id)
+  const { data: membership } = await supabase
+    .from('server_members')
+    .select('user_id')
+    .eq('server_id', serverId)
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  return !!membership;
+}
+
+// Get all roles for a server (any member can view)
+export const getAllRoles = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const { server_id } = req.params;
+    const userId = req.user?.sub;
+
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    // Check if user is member or owner of server
+    const isMemberOrOwner = await checkMembershipOrOwnership(userId, server_id);
+
+    if (!isMemberOrOwner) {
+      res.status(403).json({ error: 'You are not a member of this server' });
+      return;
+    }
+
+    const { data: roles, error } = await supabase
+      .from('roles')
+      .select(`
+        *,
+        role_categories(id, name, description)
+      `)
+      .eq('server_id', server_id)
+      .order('position', { ascending: false });
+
+    if (error) {
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    res.status(200).json(roles);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Get self-assignable roles for a server
+export const getSelfAssignableRoles = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const { server_id } = req.params;
+    const userId = req.user?.sub;
+
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    // Check if user is member or owner
+    const isMemberOrOwner = await checkMembershipOrOwnership(userId, server_id);
+
+    if (!isMemberOrOwner) {
+      res.status(403).json({ error: 'You are not a member of this server' });
+      return;
+    }
+
+    // Get self-assignable roles with categories
+    const { data: roles, error } = await supabase
+      .from('roles')
+      .select(`
+        *,
+        role_categories(id, name, description)
+      `)
+      .eq('server_id', server_id)
+      .eq('is_self_assignable', true)
+      .order('position', { ascending: false });
+
+    if (error) {
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    // Get user's current roles
+    const { data: userRoles } = await supabase
+      .from('user_roles')
+      .select('role_id')
+      .eq('user_id', userId);
+
+    const userRoleIds = userRoles?.map(ur => ur.role_id) || [];
+
+    // Mark which roles user currently has
+    const rolesWithStatus = roles?.map(role => ({
+      ...role,
+      has_role: userRoleIds.includes(role.id)
+    }));
+
+    res.status(200).json(rolesWithStatus);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Self-assign a role
+export const selfAssignRole = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const { server_id } = req.params;
+    const { roleId } = req.body;
+    const userId = req.user?.sub;
+
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    // Check if user is member or owner
+    const isMemberOrOwner = await checkMembershipOrOwnership(userId, server_id);
+
+    if (!isMemberOrOwner) {
+      res.status(403).json({ error: 'You are not a member of this server' });
+      return;
+    }
+
+    // Check if role is self-assignable
+    const { data: role, error: roleError } = await supabase
+      .from('roles')
+      .select('*')
+      .eq('id', roleId)
+      .eq('server_id', server_id)
+      .eq('is_self_assignable', true)
+      .maybeSingle();
+
+    if (roleError || !role) {
+      res.status(404).json({ error: 'Self-assignable role not found' });
+      return;
+    }
+
+    // Assign role
+    const { error } = await supabase
+      .from('user_roles')
+      .insert({
+        user_id: userId,
+        role_id: roleId
+      });
+
+    if (error) {
+      if (error.code === '23505') {
+        res.status(400).json({ error: 'You already have this role' });
+        return;
+      }
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    res.status(200).json({ message: 'Role assigned successfully', role });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Self-unassign a role
+export const selfUnassignRole = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const { server_id } = req.params;
+    const { roleId } = req.body;
+    const userId = req.user?.sub;
+
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    // Check if role is self-assignable
+    const { data: role } = await supabase
+      .from('roles')
+      .select('*')
+      .eq('id', roleId)
+      .eq('server_id', server_id)
+      .eq('is_self_assignable', true)
+      .maybeSingle();
+
+    if (!role) {
+      res.status(404).json({ error: 'Self-assignable role not found' });
+      return;
+    }
+
+    const { error } = await supabase
+      .from('user_roles')
+      .delete()
+      .eq('user_id', userId)
+      .eq('role_id', roleId);
+
+    if (error) {
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    res.status(200).json({ message: 'Role removed successfully' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Get user's roles in a server
+export const getUserRolesInServer = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const { server_id } = req.params;
+    const userId = req.user?.sub;
+
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const { data: userRoles, error } = await supabase
+      .from('user_roles')
+      .select(`
+        role_id,
+        roles!inner(
+          id,
+          name,
+          color,
+          position,
+          role_type,
+          is_self_assignable,
+          server_id
+        )
+      `)
+      .eq('user_id', userId);
+
+    if (error) {
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    // Filter roles for this server
+    const roles = userRoles
+      ?.filter((ur: any) => ur.roles?.server_id === server_id)
+      .map((ur: any) => ur.roles) || [];
+
+    res.status(200).json(roles);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Create a new role (Owner/Admin only)
+export const createNewRole = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const { server_id } = req.params;
+    const { name, color, position, is_self_assignable, category_id } = req.body;
+    const userId = req.user?.sub;
+
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const { isOwner, isAdmin } = await checkOwnerOrAdmin(userId, server_id);
+
+    if (!isOwner && !isAdmin) {
+      res.status(403).json({ error: 'Only owners and admins can create roles' });
+      return;
+    }
+
+    // Get the highest position to place new role after
+    const { data: highestRole } = await supabase
+      .from('roles')
+      .select('position')
+      .eq('server_id', server_id)
+      .order('position', { ascending: false })
+      .limit(1)
+      .single();
+
+    const newPosition = position ?? ((highestRole?.position ?? 0) + 1);
+
+    const { data: role, error } = await supabase
+      .from('roles')
+      .insert({
+        server_id: server_id,
+        name,
+        color: color || '#99AAB5',
+        position: newPosition,
+        role_type: is_self_assignable ? 'self_assignable' : 'custom',
+        is_self_assignable: is_self_assignable || false,
+        category_id: category_id || null
+      })
+      .select()
+      .single();
+
+    if (error) {
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    res.status(201).json(role);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Update a role (Owner/Admin only)
+export const updateExistingRole = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const { server_id, role_id } = req.params;
+    const { name, color, position, is_self_assignable, category_id } = req.body;
+    const userId = req.user?.sub;
+
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const { isOwner, isAdmin } = await checkOwnerOrAdmin(userId, server_id);
+
+    if (!isOwner && !isAdmin) {
+      res.status(403).json({ error: 'Only owners and admins can update roles' });
+      return;
+    }
+
+    // Check if role is owner or admin type (only owner can modify these)
+    const { data: roleData } = await supabase
+      .from('roles')
+      .select('role_type')
+      .eq('id', role_id)
+      .single();
+
+    if (roleData?.role_type === 'owner' || roleData?.role_type === 'admin') {
+      if (!isOwner) {
+        res.status(403).json({ error: 'Only the owner can modify owner/admin roles' });
+        return;
+      }
+    }
+
+    const updateData: any = {};
+    if (name !== undefined) updateData.name = name;
+    if (color !== undefined) updateData.color = color;
+    if (position !== undefined) updateData.position = position;
+    if (is_self_assignable !== undefined) {
+      updateData.is_self_assignable = is_self_assignable;
+      // Only change role_type for custom roles
+      if (roleData?.role_type !== 'owner' && roleData?.role_type !== 'admin') {
+        updateData.role_type = is_self_assignable ? 'self_assignable' : 'custom';
+      }
+    }
+    if (category_id !== undefined) updateData.category_id = category_id;
+
+    const { data: role, error } = await supabase
+      .from('roles')
+      .update(updateData)
+      .eq('id', role_id)
+      .eq('server_id', server_id)
+      .select()
+      .single();
+
+    if (error) {
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    res.status(200).json(role);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Delete a role (Owner/Admin only, but only owner can delete owner/admin roles)
+export const deleteExistingRole = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const { server_id, role_id } = req.params;
+    const userId = req.user?.sub;
+
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const { isOwner, isAdmin } = await checkOwnerOrAdmin(userId, server_id);
+
+    if (!isOwner && !isAdmin) {
+      res.status(403).json({ error: 'Only owners and admins can delete roles' });
+      return;
+    }
+
+    // Check if role is owner or admin type
+    const { data: roleData } = await supabase
+      .from('roles')
+      .select('role_type, name')
+      .eq('id', role_id)
+      .single();
+
+    if (roleData?.role_type === 'owner') {
+      res.status(403).json({ error: 'Cannot delete the owner role' });
+      return;
+    }
+
+    if (roleData?.role_type === 'admin' && !isOwner) {
+      res.status(403).json({ error: 'Only the owner can delete the admin role' });
+      return;
+    }
+
+    const { error } = await supabase
+      .from('roles')
+      .delete()
+      .eq('id', role_id)
+      .eq('server_id', server_id);
+
+    if (error) {
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    res.status(200).json({ message: 'Role deleted successfully' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Assign role to another user (Owner/Admin only)
+export const assignRoleToUser = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const { server_id } = req.params;
+    const { userId: targetUserId, roleId } = req.body;
+    const requestingUserId = req.user?.sub;
+
+    if (!requestingUserId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const { isOwner, isAdmin } = await checkOwnerOrAdmin(requestingUserId, server_id);
+
+    if (!isOwner && !isAdmin) {
+      res.status(403).json({ error: 'Only owners and admins can assign roles' });
+      return;
+    }
+
+    // Check if role exists and belongs to this server
+    const { data: role } = await supabase
+      .from('roles')
+      .select('*')
+      .eq('id', roleId)
+      .eq('server_id', server_id)
+      .maybeSingle();
+
+    if (!role) {
+      res.status(404).json({ error: 'Role not found' });
+      return;
+    }
+
+    // Only owner can assign owner/admin roles
+    if ((role.role_type === 'owner' || role.role_type === 'admin') && !isOwner) {
+      res.status(403).json({ error: 'Only the owner can assign owner/admin roles' });
+      return;
+    }
+
+    // Check if target user is member of server
+    const { data: targetMember } = await supabase
+      .from('server_members')
+      .select('user_id')
+      .eq('server_id', server_id)
+      .eq('user_id', targetUserId)
+      .maybeSingle();
+
+    if (!targetMember) {
+      res.status(404).json({ error: 'User is not a member of this server' });
+      return;
+    }
+
+    // Assign role
+    const { error } = await supabase
+      .from('user_roles')
+      .insert({
+        user_id: targetUserId,
+        role_id: roleId
+      });
+
+    if (error) {
+      if (error.code === '23505') {
+        res.status(400).json({ error: 'User already has this role' });
+        return;
+      }
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    res.status(200).json({ message: 'Role assigned successfully' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Remove role from another user (Owner/Admin only)
+export const removeRoleFromMember = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const { server_id } = req.params;
+    const { userId: targetUserId, roleId } = req.body;
+    const requestingUserId = req.user?.sub;
+
+    if (!requestingUserId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const { isOwner, isAdmin } = await checkOwnerOrAdmin(requestingUserId, server_id);
+
+    if (!isOwner && !isAdmin) {
+      res.status(403).json({ error: 'Only owners and admins can remove roles' });
+      return;
+    }
+
+    // Check if role exists
+    const { data: role } = await supabase
+      .from('roles')
+      .select('*')
+      .eq('id', roleId)
+      .eq('server_id', server_id)
+      .maybeSingle();
+
+    if (!role) {
+      res.status(404).json({ error: 'Role not found' });
+      return;
+    }
+
+    // Only owner can remove owner/admin roles
+    if ((role.role_type === 'owner' || role.role_type === 'admin') && !isOwner) {
+      res.status(403).json({ error: 'Only the owner can remove owner/admin roles' });
+      return;
+    }
+
+    const { error } = await supabase
+      .from('user_roles')
+      .delete()
+      .eq('user_id', targetUserId)
+      .eq('role_id', roleId);
+
+    if (error) {
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    res.status(200).json({ message: 'Role removed successfully' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Get all role categories for a server
+export const getRoleCategories = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const { server_id } = req.params;
+    const userId = req.user?.sub;
+
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    // Check if user is member or owner
+    const isMemberOrOwner = await checkMembershipOrOwnership(userId, server_id);
+
+    if (!isMemberOrOwner) {
+      res.status(403).json({ error: 'You are not a member of this server' });
+      return;
+    }
+
+    const { data: categories, error } = await supabase
+      .from('role_categories')
+      .select('*')
+      .eq('server_id', server_id)
+      .order('position', { ascending: true });
+
+    if (error) {
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    res.status(200).json(categories);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Create role category (Owner/Admin only)
+export const createRoleCategory = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const { server_id } = req.params;
+    const { name, description, position } = req.body;
+    const userId = req.user?.sub;
+
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const { isOwner, isAdmin } = await checkOwnerOrAdmin(userId, server_id);
+
+    if (!isOwner && !isAdmin) {
+      res.status(403).json({ error: 'Only owners and admins can create role categories' });
+      return;
+    }
+
+    const { data: category, error } = await supabase
+      .from('role_categories')
+      .insert({
+        server_id: server_id,
+        name,
+        description: description || null,
+        position: position || 0
+      })
+      .select()
+      .single();
+
+    if (error) {
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    res.status(201).json(category);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Update role category (Owner/Admin only)
+export const updateRoleCategory = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const { server_id, category_id } = req.params;
+    const { name, description, position } = req.body;
+    const userId = req.user?.sub;
+
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const { isOwner, isAdmin } = await checkOwnerOrAdmin(userId, server_id);
+
+    if (!isOwner && !isAdmin) {
+      res.status(403).json({ error: 'Only owners and admins can update role categories' });
+      return;
+    }
+
+    const updateData: any = {};
+    if (name !== undefined) updateData.name = name;
+    if (description !== undefined) updateData.description = description;
+    if (position !== undefined) updateData.position = position;
+
+    const { data: category, error } = await supabase
+      .from('role_categories')
+      .update(updateData)
+      .eq('id', category_id)
+      .eq('server_id', server_id)
+      .select()
+      .single();
+
+    if (error) {
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    res.status(200).json(category);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// Delete role category (Owner/Admin only)
+export const deleteRoleCategory = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const { server_id, category_id } = req.params;
+    const userId = req.user?.sub;
+
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const { isOwner, isAdmin } = await checkOwnerOrAdmin(userId, server_id);
+
+    if (!isOwner && !isAdmin) {
+      res.status(403).json({ error: 'Only owners and admins can delete role categories' });
+      return;
+    }
+
+    const { error } = await supabase
+      .from('role_categories')
+      .delete()
+      .eq('id', category_id)
+      .eq('server_id', server_id);
+
+    if (error) {
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    res.status(200).json({ message: 'Role category deleted successfully' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
 type Role = {
   id: string;
   name: string;
@@ -26,19 +770,11 @@ export const getRoleDetailsWithPermissions = async (req: AuthenticatedRequest, r
     }
 
     try {
-        // --- DEBUG LOG 2: Check if the user lookup is working ---
-        console.log(`Searching for user with username: "${username}"`);
         const { data: targetUserData, error: userError } = await supabase
             .from('users')
             .select('id')
             .eq('username', username)
             .single();
-
-        if (userError) {
-            console.error("Error finding user:", userError);
-        }
-        console.log("User lookup result:", targetUserData);
-
 
         if (userError || !targetUserData) {
             res.status(404).json({ error: `User with username "${username}" not found.` });
@@ -46,7 +782,6 @@ export const getRoleDetailsWithPermissions = async (req: AuthenticatedRequest, r
         }
         const targetUserId = targetUserData.id;
 
-        console.log(`Searching for roles for user ID: "${targetUserId}" on server ID: "${server_id}"`);
         const { data: userRolesOnServer, error: rolesError } = await supabase
             .from('user_roles')
             .select(`
@@ -64,12 +799,6 @@ export const getRoleDetailsWithPermissions = async (req: AuthenticatedRequest, r
             .eq('roles.server_id', server_id);
 
         if (rolesError) {
-            console.error("Error fetching roles:", rolesError);
-        }
-
-
-
-        if (rolesError) {
             throw new Error(`Error fetching roles: ${rolesError.message}`);
         }
 
@@ -78,7 +807,6 @@ export const getRoleDetailsWithPermissions = async (req: AuthenticatedRequest, r
             return;
         }
 
-        console.log("--- Successfully found roles! Sending response. ---");
         res.status(200).json(userRolesOnServer);
 
     } catch (error) {
