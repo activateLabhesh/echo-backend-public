@@ -48,7 +48,7 @@ export const register = async (req: Request, res: Response): Promise <void> => {
     email,
     password,
     options: {
-      emailRedirectTo: `https://echo.ieeecsvit.com/auth/callback?next=/login`,
+      emailRedirectTo: `${process.env.FRONTEND_URL || 'https://echo.ieeecsvit.com'}/auth/callback`,
     },
   });
 
