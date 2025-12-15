@@ -388,7 +388,17 @@ export const joinWithInvite = async (
       });
       return;
     }
+    const { data: ban } = await supabase
+  .from('server_bans')
+  .select('user_id')
+  .eq('server_id', invite.serverId)
+  .eq('user_id', userId)
+  .maybeSingle();
 
+if (ban) {
+  res.status(200).json({ error: 'You are banned from this server' });
+  return;
+}
     const { data: existingMember } = await supabase
       .from("server_members")
       .select("user_id")
@@ -850,6 +860,14 @@ export const banMember = async (req: AuthenticatedRequest, res: Response): Promi
       .select('owner_id')
       .eq('id', serverId)
       .single();
+
+      await supabase.from('server_bans').insert({
+  server_id: serverId,
+  user_id: targetUserId,
+  banned_by: userId,
+  banned_at: new Date().toISOString()
+});
+
 
     if (serverError || !serverData) {
       res.status(404).json({ error: 'Server not found' });
@@ -1341,7 +1359,7 @@ export const createServerInvite = async (req: AuthenticatedRequest, res: Respons
       message: 'Invite created successfully',
       invite: {
         ...newInvite,
-        inviteLink: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/invite/${inviteId}`
+        inviteLink: `https://echo.ieeecsvit.com/invite/${inviteId}`
       }
     });
 
