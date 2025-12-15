@@ -310,46 +310,56 @@ export const searchMentionable = async (req: AuthenticatedRequest, res: Response
 
     const results: any = { users: [] };
 
-    // Search users in the server
-    // console.log(`Searching users in server ${serverId}...`);
-    
-    let userQuery = supabase
+    // Step 1: Get all server member user_ids
+    let membersQuery = supabase
       .from('server_members')
-      .select(`
-        users!inner(id, username, avatar_url, fullname)
-      `)
+      .select('user_id')
       .eq('server_id', serverId);
     
-    // Exclude current user
+    // Exclude current user from server_members directly
     if (userId) {
-      userQuery = userQuery.neq('users.id', userId);
+      membersQuery = membersQuery.neq('user_id', userId);
     }
+
+    const { data: members, error: membersError } = await membersQuery;
+
+    if (membersError) {
+      console.error('Error fetching server members:', membersError);
+      res.json(results);
+      return;
+    }
+
+    if (!members || members.length === 0) {
+      // console.log('No members found in server');
+      res.json(results);
+      return;
+    }
+
+    // Step 2: Get user details for those member IDs
+    const memberUserIds = members.map(m => m.user_id);
+    
+    let usersQuery = supabase
+      .from('users')
+      .select('id, username, avatar_url, fullname')
+      .in('id', memberUserIds);
 
     // If query is provided, filter by username
     if (query && query.length > 0) {
-      userQuery = userQuery.ilike('users.username', `%${query}%`);
+      usersQuery = usersQuery.ilike('username', `%${query}%`);
     }
 
-    const { data: users, error: usersError } = await userQuery
-      .limit(query && query.length > 0 ? 10 : 15); // Show more users when no query
+    const { data: users, error: usersError } = await usersQuery
+      .limit(query && query.length > 0 ? 10 : 15);
 
-    // console.log(`Raw users data:`, users);
-    // console.log(`Users error:`, usersError);
-
-    if (!usersError && users) {
-      // Extract the users from the nested structure
-      const extractedUsers = users.map(member => {
-        // console.log(`Processing member:`, member);
-        return member.users;
-      }).filter(user => user != null);
-      
-      // console.log(`Extracted users:`, extractedUsers);
-      results.users = extractedUsers;
-    } else if (usersError) {
-      console.error(`Users query error:`, usersError);
+    if (usersError) {
+      console.error('Error fetching users:', usersError);
+      res.json(results);
+      return;
     }
 
-    // console.log(`Returning results:`, { userCount: results.users.length });
+    // console.log(`Found ${users?.length || 0} users`);
+    results.users = users || [];
+
     res.json(results);
   } catch (error) {
     console.error('Failed to search mentionable:', error);

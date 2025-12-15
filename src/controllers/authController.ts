@@ -2,6 +2,18 @@ import { Request, Response } from 'express';
 import {supabase,supabaseAdmin} from '../client/supabase'
 import jwt from 'jsonwebtoken';
 
+// Helper function to get the correct frontend URL based on request origin
+const getFrontendUrl = (req: Request): string => {
+  const origin = req.headers.origin;
+  const allowedOrigins = process.env.FRONTEND_URL?.split(',').map(url => url.trim()) || [];
+  
+  if (origin && allowedOrigins.includes(origin)) {
+    return origin;
+  }
+  // Default to first allowed origin or fallback
+  return allowedOrigins[0] || 'https://echo.ieeecsvit.com';
+};
+
 const cookieOptions = {
   httpOnly: true,
   secure: true,
@@ -48,7 +60,7 @@ export const register = async (req: Request, res: Response): Promise <void> => {
     email,
     password,
     options: {
-      emailRedirectTo: `https://echo.ieeecsvit.com/auth/callback?next=/login`,
+      emailRedirectTo: `${getFrontendUrl(req)}/auth/callback?next=/login`,
     },
   });
 

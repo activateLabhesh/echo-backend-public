@@ -75,6 +75,36 @@ interface ErrorContext {
 }
 
 // Error handling and recovery utility classes
+// Enhanced media states interface - moved to module level for exports
+export interface MediaState {
+  userId: string;
+  muted: boolean;
+  speaking: boolean;
+  video: boolean;
+  screenSharing: boolean;
+  mediaQuality: 'low' | 'medium' | 'high' | 'auto';
+  activeStreams: {
+    audio: boolean;
+    video: boolean;
+    screen: boolean;
+  };
+  deviceInfo?: {
+    audioInputs: number;
+    videoInputs: number;
+    activeAudioDevice?: string;
+    activeVideoDevice?: string;
+  };
+  recordingState?: {
+    isRecording: boolean;
+    recordingId?: string;
+    startTime?: Date;
+  };
+}
+
+// Module-level state maps - exported for use in other modules (e.g., voice presence API)
+export const channelUsers = new Map<string, string[]>(); // Map<channelId, socketId[]>
+export const voiceStates = new Map<string, MediaState>(); // Map<socketId, enhanced media state>
+
 class VoiceErrorHandler {
   private static errorHistory = new Map<string, VoiceError[]>();
   private static recoveryStates = new Map<string, RecoveryState>();
@@ -206,35 +236,7 @@ class RetryManager {
 }
 
 export function setupVoiceSocket() {
-  const channelUsers = new Map<string, string[]>(); // Map<channelId, socketId[]>
-  
-  // Enhanced media states to support advanced features
-  interface MediaState {
-    userId: string;
-    muted: boolean;
-    speaking: boolean;
-    video: boolean;
-    screenSharing: boolean;
-    mediaQuality: 'low' | 'medium' | 'high' | 'auto';
-    activeStreams: {
-      audio: boolean;
-      video: boolean;
-      screen: boolean;
-    };
-    deviceInfo?: {
-      audioInputs: number;
-      videoInputs: number;
-      activeAudioDevice?: string;
-      activeVideoDevice?: string;
-    };
-    recordingState?: {
-      isRecording: boolean;
-      recordingId?: string;
-      startTime?: Date;
-    };
-  }
-  
-  const voiceStates = new Map<string, MediaState>(); // Map<socketId, enhanced media state>
+  // NOTE: channelUsers, voiceStates, and MediaState are now at module level for export
   
   // Connection state tracking
   const connectionStates = new Map<string, ConnectionState>();
@@ -1567,6 +1569,66 @@ export function setupVoiceSocket() {
         }
       } catch (error) {
         console.error('Reconnection attempt handling error:', error);
+      }
+    });
+
+    // Handle voice channel invite - sends real-time notification to target user
+    socket.on('send_voice_invite', (data: {
+      targetUserId: string;
+      channelId: string;
+      channelName: string;
+      serverId: string;
+      serverName: string;
+      inviterUserId: string;
+      inviterUsername: string;
+      inviterAvatar?: string;
+    }) => {
+      try {
+        const { targetUserId, channelId, channelName, serverId, serverName, inviterUserId, inviterUsername, inviterAvatar } = data;
+
+        // Validate required fields
+        if (!targetUserId || !channelId || !inviterUserId) {
+          console.error('[Voice Invite] Missing required fields:', data);
+          socket.emit('voice_invite_error', { message: 'Missing required invite information' });
+          return;
+        }
+
+        // Get the target user's socket ID from the userSocketMap
+        const targetSocketId = userSocketMap.get(targetUserId);
+
+        if (!targetSocketId) {
+          console.log(`[Voice Invite] Target user ${targetUserId} is not online`);
+          socket.emit('voice_invite_error', { 
+            message: 'User is offline',
+            targetUserId 
+          });
+          return;
+        }
+
+        // Send the invite notification to the target user
+        io.to(targetSocketId).emit('voice_invite_received', {
+          channelId,
+          channelName,
+          serverId,
+          serverName,
+          inviterUserId,
+          inviterUsername,
+          inviterAvatar,
+          timestamp: new Date().toISOString()
+        });
+
+        console.log(`[Voice Invite] Sent invite from ${inviterUsername} to user ${targetUserId} for channel ${channelName}`);
+
+        // Confirm to the sender that the invite was sent
+        socket.emit('voice_invite_sent', {
+          targetUserId,
+          channelId,
+          success: true
+        });
+
+      } catch (error) {
+        console.error('[Voice Invite] Error sending invite:', error);
+        socket.emit('voice_invite_error', { message: 'Failed to send voice invite' });
       }
     });
 

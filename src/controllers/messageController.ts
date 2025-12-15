@@ -349,6 +349,16 @@ export const messageGetController = async (req:Request, res:Response):Promise<an
             return res.status(400).json({msg:'Invalid channelId received'});
         }
 
+        // Get total count for hasMore calculation
+        const { count, error: countError } = await supabase
+            .from('messages')
+            .select('*', { count: 'exact', head: true })
+            .eq('channel_id', channel_id);
+
+        if(countError){
+            console.error('Error counting messages:', countError);
+        }
+
         const { data, error } = await supabase
             .from('messages')
             .select('*')
@@ -380,8 +390,13 @@ export const messageGetController = async (req:Request, res:Response):Promise<an
             username: usersMap.get(msg.sender_id) || null
         })) : [];
 
+        const totalCount = count || 0;
+        const hasMore = offset + pageSize < totalCount;
+
         return res.status(200).json({
-            data: messagesWithUsernames
+            data: messagesWithUsernames,
+            hasMore,
+            totalCount
         });
     }
     catch(e:any){
@@ -395,6 +410,53 @@ interface DmThread {
     user1_id:string;
     user2_id:string;
 }
+
+export const getDmThreadMessages = async (req: Request, res: Response): Promise<any> => {
+    try {
+        const { threadId } = req.params;
+        const offset = parseInt(req.query?.offset as string, 10) || 0;
+        const pageSize = 15;
+
+        if (!threadId) {
+            return res.status(400).json({ error: 'Thread ID is required.' });
+        }
+
+        // Get total count for hasMore calculation
+        const { count, error: countError } = await supabase
+            .from('dm_messages')
+            .select('*', { count: 'exact', head: true })
+            .eq('thread_id', threadId);
+
+        if (countError) {
+            console.error('Error counting DM messages:', countError);
+        }
+
+        // Fetch messages with pagination (descending order to get newest first, then reverse on frontend)
+        const { data, error } = await supabase
+            .from('dm_messages')
+            .select('*')
+            .eq('thread_id', threadId)
+            .order('timestamp', { ascending: false })
+            .range(offset, offset + pageSize - 1);
+
+        if (error) {
+            console.error('Error fetching DM thread messages:', error);
+            return res.status(500).json({ error: 'Failed to fetch messages.' });
+        }
+
+        const totalCount = count || 0;
+        const hasMore = offset + pageSize < totalCount;
+
+        return res.status(200).json({
+            data: data || [],
+            hasMore,
+            totalCount
+        });
+    } catch (err) {
+        console.error('Unexpected error in getDmThreadMessages:', err);
+        return res.status(500).json({ error: 'Internal server error' });
+    }
+};
 
 export const getDmMessages = async (req: Request, res: Response): Promise<void> => {
     try {

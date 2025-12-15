@@ -1499,3 +1499,136 @@ export const transferOwnership = async (req: AuthenticatedRequest, res: Response
     res.status(500).json({ error: 'Internal server error' });
   }
 };
+
+// Get server members with voice presence information
+export const getServerMembersWithVoicePresence = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const { serverId } = req.params;
+    const userId = req.user?.sub;
+
+    if (!userId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    // Import voice socket maps - dynamic import to avoid circular dependencies
+    const { channelUsers, voiceStates } = await import('../sockets/voiceSocket');
+    const { userSocketMap } = await import('../sockets/chatSocket');
+
+    // Check if user is the server owner or a member of the server
+    const { data: serverData, error: serverError } = await supabase
+      .from('servers')
+      .select('owner_id')
+      .eq('id', serverId)
+      .single();
+
+    if (serverError) {
+      res.status(404).json({ error: 'Server not found' });
+      return;
+    }
+
+    const isOwner = serverData.owner_id === userId;
+
+    // If not the owner, check if user is a member
+    if (!isOwner) {
+      const { data: memberData, error: memberError } = await supabase
+        .from('server_members')
+        .select('*')
+        .eq('server_id', serverId)
+        .eq('user_id', userId)
+        .single();
+
+      if (memberError || !memberData) {
+        res.status(403).json({ error: 'Access denied - not a member of this server' });
+        return;
+      }
+    }
+
+    // Fetch all server members with user details
+    const { data: members, error: membersError } = await supabase
+      .from('server_members')
+      .select(`
+        user_id,
+        joined_at,
+        users (
+          id,
+          username,
+          fullname,
+          avatar_url
+        )
+      `)
+      .eq('server_id', serverId);
+
+    if (membersError) {
+      console.error('Error fetching server members:', membersError);
+      res.status(500).json({ error: 'Failed to fetch server members' });
+      return;
+    }
+
+    // Get all voice channels for this server to map channelId -> channelName
+    const { data: voiceChannels, error: channelsError } = await supabase
+      .from('channels')
+      .select('id, name')
+      .eq('server_id', serverId)
+      .eq('type', 'voice');
+
+    if (channelsError) {
+      console.error('Error fetching voice channels:', channelsError);
+    }
+
+    const channelMap = new Map<string, string>();
+    (voiceChannels || []).forEach((channel: { id: string; name: string }) => {
+      channelMap.set(channel.id, channel.name);
+    });
+
+    // Build a map of userId -> voice channel info
+    const userVoicePresence = new Map<string, { channel_id: string; channel_name: string }>();
+    
+    // Iterate through channelUsers to find which users are in voice channels
+    for (const [channelId, socketIds] of channelUsers.entries()) {
+      // Only process channels that belong to this server
+      if (!channelMap.has(channelId)) continue;
+      
+      const channelName = channelMap.get(channelId) || 'Unknown Channel';
+      
+      for (const socketId of socketIds) {
+        // Get userId from the voiceStates map
+        const voiceState = voiceStates.get(socketId);
+        if (voiceState && voiceState.userId) {
+          userVoicePresence.set(voiceState.userId, {
+            channel_id: channelId,
+            channel_name: channelName
+          });
+        }
+      }
+    }
+
+    // Transform members to include voice presence
+    const membersWithVoicePresence = (members || []).map((member: any) => {
+      const user = member.users;
+      const userIdFromMember = member.user_id;
+      
+      // Check if user is online (has an active socket connection)
+      const socketId = userSocketMap.get(userIdFromMember);
+      const isOnline = !!socketId;
+      
+      // Get voice channel info if user is in a voice channel
+      const voiceChannel = userVoicePresence.get(userIdFromMember);
+
+      return {
+        user_id: userIdFromMember,
+        username: user?.username || 'Unknown',
+        fullname: user?.fullname || user?.username || 'Unknown',
+        avatar_url: user?.avatar_url || null,
+        status: isOnline ? 'online' : 'offline',
+        voice_channel: voiceChannel || null
+      };
+    });
+
+    res.status(200).json(membersWithVoicePresence);
+
+  } catch (error) {
+    console.error('Error getting server members with voice presence:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
