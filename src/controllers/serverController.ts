@@ -3,6 +3,7 @@ import { supabase } from '../client/supabase';
 import { AuthenticatedRequest } from '../middleware/authMiddleware';
 import {v4} from 'uuid';
 import { RequestWithBusboy } from '../middleware/busboyMiddleware';
+import { checkOwnerOrAdmin } from './roleController';
 
 export const screation = async (req: AuthenticatedRequest, res: Response): Promise<void>=> {
   const { name } = req.body;
@@ -750,15 +751,23 @@ export const kickMember = async (req: AuthenticatedRequest, res: Response): Prom
       return;
     }
 
-    // Only owner can kick members for now (can be enhanced with role permissions)
-    if (serverData.owner_id !== userId) {
-      res.status(403).json({ error: 'Only server owner can kick members' });
+    // Check if user is owner or admin
+    const { isOwner, isAdmin } = await checkOwnerOrAdmin(userId, serverId);
+    
+    if (!isOwner && !isAdmin) {
+      res.status(403).json({ error: 'Only server owners and admins can kick members' });
       return;
     }
 
     // Cannot kick yourself
     if (userId === targetUserId) {
       res.status(400).json({ error: 'Cannot kick yourself' });
+      return;
+    }
+
+    // Admins cannot kick the server owner
+    if (targetUserId === serverData.owner_id) {
+      res.status(403).json({ error: 'Cannot kick the server owner' });
       return;
     }
 
@@ -816,15 +825,23 @@ export const banMember = async (req: AuthenticatedRequest, res: Response): Promi
       return;
     }
 
-    // Only owner can ban members for now
-    if (serverData.owner_id !== userId) {
-      res.status(403).json({ error: 'Only server owner can ban members' });
+    // Check if user is owner or admin
+    const { isOwner, isAdmin } = await checkOwnerOrAdmin(userId, serverId);
+    
+    if (!isOwner && !isAdmin) {
+      res.status(403).json({ error: 'Only server owners and admins can ban members' });
       return;
     }
 
     // Cannot ban yourself
     if (userId === targetUserId) {
       res.status(400).json({ error: 'Cannot ban yourself' });
+      return;
+    }
+
+    // Admins cannot ban the server owner
+    if (targetUserId === serverData.owner_id) {
+      res.status(403).json({ error: 'Cannot ban the server owner' });
       return;
     }
 

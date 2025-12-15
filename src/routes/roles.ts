@@ -31,8 +31,6 @@ import { authenticate } from '../middleware/authMiddleware';
 
 const route = express.Router();
 
-// ==================== NEW RBAC ROUTES ====================
-
 // Get all roles for a server (any member)
 route.get('/:server_id/all', authenticate, getAllRoles);
 
@@ -58,8 +56,6 @@ route.get('/:server_id/categories', authenticate, getRoleCategories);
 route.post('/:server_id/categories', authenticate, createRoleCategory);
 route.put('/:server_id/categories/:category_id', authenticate, updateRoleCategory);
 route.delete('/:server_id/categories/:category_id', authenticate, deleteRoleCategory);
-
-// ==================== EXISTING ROUTES ====================
 
 // Existing routes (kept for backward compatibility)
 route.get('/:server_id/view', getRoleDetailsWithPermissions);

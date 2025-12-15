@@ -156,11 +156,6 @@ export const selfAssignRole = async (req: AuthenticatedRequest, res: Response): 
     const { roleId } = req.body;
     const userId = req.user?.sub;
 
-    console.log('=== SELF ASSIGN DEBUG ===');
-    console.log('server_id:', server_id);
-    console.log('roleId:', roleId);
-    console.log('userId:', userId);
-
     if (!userId) {
       res.status(401).json({ error: 'Unauthorized' });
       return;
@@ -168,7 +163,6 @@ export const selfAssignRole = async (req: AuthenticatedRequest, res: Response): 
 
     // Check if user is member or owner
     const isMemberOrOwner = await checkMembershipOrOwnership(userId, server_id);
-    console.log('isMemberOrOwner:', isMemberOrOwner);
 
     if (!isMemberOrOwner) {
       res.status(403).json({ error: 'You are not a member of this server' });
@@ -183,9 +177,6 @@ export const selfAssignRole = async (req: AuthenticatedRequest, res: Response): 
       .eq('server_id', server_id)
       .eq('is_self_assignable', true)
       .maybeSingle();
-
-    console.log('Role lookup result:', role);
-    console.log('Role lookup error:', roleError);
 
     if (roleError || !role) {
       res.status(404).json({ error: 'Self-assignable role not found' });
@@ -602,8 +593,6 @@ export const removeRoleFromMember = async (req: AuthenticatedRequest, res: Respo
   }
 };
 
-// ==================== ROLE CATEGORIES ====================
-
 // Get all role categories for a server
 export const getRoleCategories = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
@@ -759,8 +748,6 @@ export const deleteRoleCategory = async (req: AuthenticatedRequest, res: Respons
   }
 };
 
-// ==================== EXISTING CODE BELOW ====================
-
 type Role = {
   id: string;
   name: string;
@@ -783,19 +770,11 @@ export const getRoleDetailsWithPermissions = async (req: AuthenticatedRequest, r
     }
 
     try {
-        // --- DEBUG LOG 2: Check if the user lookup is working ---
-        console.log(`Searching for user with username: "${username}"`);
         const { data: targetUserData, error: userError } = await supabase
             .from('users')
             .select('id')
             .eq('username', username)
             .single();
-
-        if (userError) {
-            console.error("Error finding user:", userError);
-        }
-        console.log("User lookup result:", targetUserData);
-
 
         if (userError || !targetUserData) {
             res.status(404).json({ error: `User with username "${username}" not found.` });
@@ -803,7 +782,6 @@ export const getRoleDetailsWithPermissions = async (req: AuthenticatedRequest, r
         }
         const targetUserId = targetUserData.id;
 
-        console.log(`Searching for roles for user ID: "${targetUserId}" on server ID: "${server_id}"`);
         const { data: userRolesOnServer, error: rolesError } = await supabase
             .from('user_roles')
             .select(`
@@ -821,12 +799,6 @@ export const getRoleDetailsWithPermissions = async (req: AuthenticatedRequest, r
             .eq('roles.server_id', server_id);
 
         if (rolesError) {
-            console.error("Error fetching roles:", rolesError);
-        }
-
-
-
-        if (rolesError) {
             throw new Error(`Error fetching roles: ${rolesError.message}`);
         }
 
@@ -835,7 +807,6 @@ export const getRoleDetailsWithPermissions = async (req: AuthenticatedRequest, r
             return;
         }
 
-        console.log("--- Successfully found roles! Sending response. ---");
         res.status(200).json(userRolesOnServer);
 
     } catch (error) {

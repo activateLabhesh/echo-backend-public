@@ -15,10 +15,7 @@ export interface AuthenticatedRequest extends Request {
 }
 
 export const authenticate = (req: Request, res: Response, next: NextFunction): void => {
-let token: string | undefined;
-  console.log('=== AUTH MIDDLEWARE HIT ===');
-  console.log('URL:', req.url);
-  console.log('Method:', req.method);
+  let token: string | undefined;
   
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')){

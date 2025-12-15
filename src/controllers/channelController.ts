@@ -230,16 +230,9 @@ export const getChannelsWithAccess = async (req: AuthenticatedRequest, res: Resp
       `)
       .eq('user_id', userId);
 
-    console.log('=== CHANNEL ACCESS DEBUG ===');
-    console.log('userId:', userId);
-    console.log('server_id:', server_id);
-    console.log('userRoles raw:', JSON.stringify(userRoles, null, 2));
-
     const userRoleIds = userRoles
       ?.filter((ur: any) => ur.roles?.server_id === server_id)
       .map(ur => ur.role_id) || [];
-
-    console.log('userRoleIds for this server:', userRoleIds);
 
     // Get channel role access for private channels
     const privateChannelIds = channels?.filter(c => c.is_private).map(c => c.id) || [];

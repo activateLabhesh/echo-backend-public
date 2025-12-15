@@ -47,10 +47,10 @@ export const supabaseAdmin = createClient(
 export const testConnection = async () => {
   try {
     await supabase.from('users').select('count').single();
-    console.log('✅ Successfully connected to Supabase database');
+    console.log('Successfully connected to Supabase database');
     return true;
   } catch (error: unknown) {
-    console.error('❌ Failed to connect to Supabase database:', error instanceof Error ? error.message : 'Unknown error');
+    console.error('Failed to connect to Supabase database:', error instanceof Error ? error.message : 'Unknown error');
     return false;
   }
 }; 
