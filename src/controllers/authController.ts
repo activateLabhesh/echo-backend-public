@@ -431,12 +431,14 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
     // Check if user exists in our users table by ID
     let { data: existingUser, error: fetchError } = await supabaseAdmin
       .from('users')
-      .select('id, email, username, fullname, avatar_url, bio, date_of_birth, status, created_at')
+      .select('*')
       .eq('id', supabaseUser.id)
       .maybeSingle();
 
-    if (fetchError) {
-      console.error('Error fetching user by ID:', fetchError);
+    if (fetchError && fetchError.code !== 'PGRST116') {
+      console.error('Error checking existing user:', fetchError);
+      res.status(500).json({ message: 'Database error' });
+      return;
     }
 
     // If not found by ID, check by email
@@ -500,28 +502,23 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
         fullname: supabaseUser.user_metadata?.full_name || '',
         avatar_url: supabaseUser.user_metadata?.avatar_url || null,
         status: 'offline',
-        bio: '',
+        bio: "Hey, I'm using echo! ",
         date_of_birth: null,
       };
 
-      const { error: insertError } = await supabaseAdmin
+      const { data: upsertedUser, error: upsertError } = await supabaseAdmin
         .from('users')
-        .insert([newUser]);
+        .upsert([newUser], { onConflict: 'id' })
+        .select('id, email, username, fullname, avatar_url, bio, date_of_birth, status, created_at')
+        .single();
 
-      if (insertError) {
-        console.error('Error creating OAuth user:', insertError);
+      if (upsertError) {
+        console.error('Error creating OAuth user:', upsertError);
         res.status(500).json({ message: 'Failed to create user record' });
         return;
       }
 
-      // Fetch the newly created user
-      const { data: newUserData } = await supabaseAdmin
-        .from('users')
-        .select('id, email, username, fullname, avatar_url, bio, date_of_birth, status, created_at')
-        .eq('id', supabaseUser.id)
-        .maybeSingle();
-
-      userDetails = newUserData;
+      userDetails = upsertedUser;
     } else {
       // Update avatar if user doesn't have one
       if (!existingUser.avatar_url && supabaseUser.user_metadata?.avatar_url) {
