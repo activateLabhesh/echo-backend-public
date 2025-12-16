@@ -7,7 +7,7 @@ const cookieOptions = {
   secure: true,
   sameSite: 'none' as const,
   path: '/',
-  maxAge: 60 * 60 * 24 * 7,
+  maxAge: 60 * 60 * 1000 , // 1 hour in milliseconds
 };
 
 
@@ -69,7 +69,7 @@ export const register = async (req: Request, res: Response): Promise <void> => {
       date_of_birth,
       avatar_url: null,
       status: 'offline',
-      bio:'', //present in supabase
+      bio:'',
     },
   ]);
 
@@ -85,10 +85,11 @@ export const register = async (req: Request, res: Response): Promise <void> => {
 // login route
 export const login = async (req: Request, res: Response):Promise <void> => {
   const { identifier, password } = req.body;
-  const isMobileApp = req.headers['x-client-type'] === 'Mobile'; //checks where the request is from
+  const isMobileApp = req.headers['x-client-type'] === 'Mobile';
 
-  let email =identifier;
-  //check if identifier is not email, then it is username. search database for that username and extract email from it
+  let email = identifier;
+  
+  // Check if identifier is not email, then it is username
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier)) {
     const { data, error } = await supabaseAdmin
       .from('users')
@@ -114,100 +115,143 @@ export const login = async (req: Request, res: Response):Promise <void> => {
     return
   }
 
-  const { access_token, refresh_token, user } = data.session;
+  const { access_token, refresh_token, user, expires_in } = data.session;
 
   const { data: userDetails, error: fetchError } = await supabaseAdmin
-  .from('users')
-  .select('id, email, username, fullname, avatar_url, bio, date_of_birth, status,created_at')
-  .eq('id', user.id)
-  .maybeSingle();
+    .from('users')
+    .select('id, email, username, fullname, avatar_url, bio, date_of_birth, status, created_at')
+    .eq('id', user.id)
+    .maybeSingle();
 
-if (fetchError || !userDetails) {
-  res.status(500).json({ message: 'Failed to fetch user profile details' });
-  return;
-}
+  if (fetchError || !userDetails) {
+    res.status(500).json({ message: 'Failed to fetch user profile details' });
+    return;
+  }
 
-  if(isMobileApp){
+  if (isMobileApp) {
     res.status(200).json({
-      message : "Logged In",
-      user: userDetails,
-      accessToken:access_token,
-      refreshToken:refresh_token,
-      expiresIn: data.session.expires_in,
-    })
-  } else{
-    res.cookie('access_token', access_token, cookieOptions);
-    res.cookie('refresh_token', refresh_token, {
-      ...cookieOptions,
-      maxAge: 60 * 60 * 24 * 30,
-    });
-    console.log("Logged in the user.");
-    res.status(200).json({ 
-      message: 'Logged in', 
+      message: "Logged in successfully",
       user: userDetails,
       accessToken: access_token,
       refreshToken: refresh_token,
-      expiresIn: data.session.expires_in
+      expiresIn: expires_in, // in seconds
+    });
+  } else {
+    res.cookie('access_token', access_token, cookieOptions);
+    res.cookie('refresh_token', refresh_token, {
+      ...cookieOptions,
+      maxAge: 60 * 60 * 24 * 30 * 1000, // 30 days
+    });
+    
+    console.log("User logged in successfully");
+    res.status(200).json({ 
+      message: 'Logged in successfully', 
+      user: userDetails,
+      accessToken: access_token,
+      refreshToken: refresh_token,
+      expiresIn: expires_in // in seconds
     });
   }
 };
 
-//refresh tokens
+// refresh tokens
 export const refreshToken = async (req: Request, res: Response): Promise <void> => {
   const isMobileApp = req.headers['x-client-type'] === 'Mobile';
 
   let refresh_token: string | undefined;
 
   if (isMobileApp) {
-    refresh_token = req.body.refresh_token;
+    // Accept both formats for mobile
+    refresh_token = req.body.refreshToken || req.body.refresh_token;
   } else {
     refresh_token = req.cookies.refresh_token;
   }
 
   if (!refresh_token) {
-    res.status(401).json({ message: 'Refresh token missing' });
-    return
+    res.status(401).json({ 
+      message: 'Refresh token missing',
+      error: 'NO_REFRESH_TOKEN'
+    });
+    return;
   }
 
-  const { data, error } = await supabase.auth.refreshSession({ refresh_token });
+  try {
+    const { data, error } = await supabase.auth.refreshSession({ refresh_token });
 
-  if (error || !data.session) {
-    res.status(401).json({ message: 'Invalid refresh token' });
-    return
-  }
+    if (error || !data.session) {
+      console.error('Refresh token error:', error);
+      res.status(401).json({ 
+        message: 'Invalid or expired refresh token',
+        error: 'INVALID_REFRESH_TOKEN'
+      });
+      return;
+    }
 
-  const { access_token, refresh_token: newRefreshToken, user } = data.session;
-  console.log("refresh", data.session.expires_in);
-  if (isMobileApp) {
-    res.status(200).json({
-      message: 'Token refreshed',
-      accessToken: access_token,
-      refreshToken: newRefreshToken,
-      user: user,
-      expiresIn: data.session.expires_in ///////////////////////////////////////////////////////
-    });
-  } else {
-    res.cookie('access_token', access_token, cookieOptions);
-    res.cookie('refresh_token', newRefreshToken, {
-      ...cookieOptions,
-      maxAge: 60 * 60 * 24 * 30,
-    });
-    res.status(200).json({ 
-      message: 'Token refreshed',
-      accessToken: access_token,
-      refreshToken: newRefreshToken,
-      expiresIn: data.session.expires_in
+    const { access_token, refresh_token: newRefreshToken, user, expires_in } = data.session;
+    
+    // Fetch complete user details from database
+    const { data: userDetails, error: fetchError } = await supabaseAdmin
+      .from('users')
+      .select('id, email, username, fullname, avatar_url, bio, date_of_birth, status, created_at')
+      .eq('id', user.id)
+      .maybeSingle();
+
+    console.log('Token refreshed for user:', user.id);
+    console.log('New token expires in:', expires_in, 'seconds');
+
+    if (isMobileApp) {
+      res.status(200).json({
+        message: 'Token refreshed successfully',
+        accessToken: access_token,
+        refreshToken: newRefreshToken,
+        expiresIn: expires_in, // in seconds
+        user: userDetails || {
+          id: user.id,
+          email: user.email,
+          username: user.user_metadata?.username,
+          fullname: user.user_metadata?.fullname,
+          avatar_url: user.user_metadata?.avatar_url,
+        }
+      });
+    } else {
+      res.cookie('access_token', access_token, cookieOptions);
+      res.cookie('refresh_token', newRefreshToken, {
+        ...cookieOptions,
+        maxAge: 60 * 60 * 24 * 30 * 1000, // 30 days
+      });
+      
+      res.status(200).json({
+        message: 'Token refreshed successfully',
+        accessToken: access_token,
+        refreshToken: newRefreshToken,
+        expiresIn: expires_in, // in seconds
+        user: userDetails || {
+          id: user.id,
+          email: user.email,
+          username: user.user_metadata?.username,
+          fullname: user.user_metadata?.fullname,
+          avatar_url: user.user_metadata?.avatar_url,
+        }
+      });
+    }
+  } catch (err) {
+    console.error('Refresh token error:', err);
+    res.status(500).json({ 
+      message: 'Failed to refresh token',
+      error: 'SERVER_ERROR'
     });
   }
 };
 
-//logout route
+// logout route
 export const logout = async (req: Request, res: Response): Promise<void> => {
-
-  const isMobileApp = req.headers['X-Client-Type'] === 'mobile-app';
-  if(isMobileApp){
+  const isMobileApp = req.headers['x-client-type'] === 'Mobile';
+  
+  if (isMobileApp) {
     res.status(200).json({ message: 'Logged out successfully' });
+    return;
   }
+  
   const accessToken = req.cookies.access_token;
 
   if (!accessToken) {
@@ -224,7 +268,7 @@ export const logout = async (req: Request, res: Response): Promise<void> => {
   }
 };
 
-//send reset password link
+// send reset password link
 export const sendResetPasswordEmail = async (req: Request, res: Response):Promise<void> => {
   const { email } = req.body;
 
@@ -246,7 +290,7 @@ export const sendResetPasswordEmail = async (req: Request, res: Response):Promis
   return
 };
 
-//update password using reset session
+// update password using reset session
 export const updatePassword = async (req: Request, res: Response):Promise<void> => {
   const authHeader = req.headers['authorization'];
   const access_token = authHeader?.split(' ')[1];
@@ -257,7 +301,7 @@ export const updatePassword = async (req: Request, res: Response):Promise<void> 
     return
   }
 
-  //extract user id from the token
+  // extract user id from the token
   let userId: string;
   try {
     const { data: userData, error } = await supabase.auth.getUser(access_token);
@@ -271,7 +315,7 @@ export const updatePassword = async (req: Request, res: Response):Promise<void> 
     return;
   }
 
-  //update password using admin 
+  // update password using admin 
   const { data, error } = await supabaseAdmin.auth.admin.updateUserById(userId, {
     password: new_password,
   });
@@ -287,7 +331,6 @@ export const updatePassword = async (req: Request, res: Response):Promise<void> 
 
 // change password for logged-in users
 export const changePassword = async (req: Request, res: Response): Promise<void> => {
-
   const authHeader = req.headers['authorization'];
   const headerToken = authHeader?.startsWith('Bearer ') ? authHeader.split(' ')[1] : undefined;
   const cookieToken = req.cookies?.access_token;
@@ -358,12 +401,11 @@ export const authorize = async (req: Request, res: Response): Promise<void> => {
 
   } catch (err: any) {
     console.error('Error in authorize route:', err.message || err);
-    // Catch any unexpected errors during token processing
     res.status(500).json({ message: 'Internal server error during authorization.' });
   }
 };
 
-//handle OAuth user (Google, etc.)
+// handle OAuth user (Google, etc.)
 export const handleOAuthUser = async (req: Request, res: Response): Promise<void> => {
   const isMobileApp = req.headers['x-client-type'] === 'Mobile';
   const authHeader = req.headers.authorization;
@@ -385,7 +427,6 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
     }
 
     const supabaseUser = userData.user;
-    // console.log('OAuth user:', supabaseUser.email);
 
     // Check if user exists in our users table by ID
     let { data: existingUser, error: fetchError } = await supabaseAdmin
@@ -398,7 +439,7 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
       console.error('Error fetching user by ID:', fetchError);
     }
 
-    // If not found by ID, check by email (user might have registered with email/password before)
+    // If not found by ID, check by email
     if (!existingUser && supabaseUser.email) {
       const { data: emailUser, error: emailError } = await supabaseAdmin
         .from('users')
@@ -411,9 +452,7 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
       }
 
       if (emailUser) {
-        // console.log('Found existing user by email, updating ID to link OAuth account');
-        
-        // Update the existing user's ID to match the new Supabase OAuth ID
+        // Update the existing user's ID to match the OAuth ID
         const { error: updateError } = await supabaseAdmin
           .from('users')
           .update({ id: supabaseUser.id })
@@ -421,10 +460,8 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
 
         if (updateError) {
           console.error('Error linking OAuth account:', updateError);
-          // If we can't update the ID, just use the existing user data
           existingUser = emailUser;
         } else {
-          // Fetch the updated user
           const { data: updatedUser } = await supabaseAdmin
             .from('users')
             .select('id, email, username, fullname, avatar_url, bio, date_of_birth, status, created_at')
@@ -432,7 +469,6 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
             .maybeSingle();
           
           existingUser = updatedUser || emailUser;
-          // console.log('OAuth account linked successfully for:', emailUser.username);
         }
       }
     }
@@ -441,8 +477,6 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
 
     // If user doesn't exist, create them
     if (!existingUser) {
-      // console.log('Creating new OAuth user:', supabaseUser.email);
-
       // Generate username from email or OAuth name
       let username = supabaseUser.user_metadata?.full_name?.replace(/\s+/g, '_').toLowerCase() 
                      || supabaseUser.email?.split('@')[0] 
@@ -455,7 +489,6 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
         .eq('username', username)
         .maybeSingle();
 
-      // If username exists, append random numbers
       if (usernameCheck) {
         username = `${username}_${Math.floor(Math.random() * 9999)}`;
       }
@@ -489,11 +522,8 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
         .maybeSingle();
 
       userDetails = newUserData;
-      // console.log('OAuth user created successfully:', username);
     } else {
-      // console.log('Existing user found:', existingUser.username);
-      
-      // Optionally update avatar if user doesn't have one
+      // Update avatar if user doesn't have one
       if (!existingUser.avatar_url && supabaseUser.user_metadata?.avatar_url) {
         await supabaseAdmin
           .from('users')
@@ -504,9 +534,10 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
       }
     }
 
-    // Get refresh token from session
+    // Get refresh token and expiry from session
     const { data: sessionData } = await supabase.auth.getSession();
     const refresh_token = sessionData?.session?.refresh_token || '';
+    const expires_in = sessionData?.session?.expires_in || 3600;
 
     if (isMobileApp) {
       res.status(200).json({
@@ -514,6 +545,7 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
         user: userDetails,
         accessToken: access_token,
         refreshToken: refresh_token,
+        expiresIn: expires_in,
         isNewUser: !existingUser,
       });
     } else {
@@ -521,7 +553,7 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
       if (refresh_token) {
         res.cookie('refresh_token', refresh_token, {
           ...cookieOptions,
-          maxAge: 60 * 60 * 24 * 30,
+          maxAge: 60 * 60 * 24 * 30 * 1000,
         });
       }
       res.status(200).json({
@@ -529,6 +561,7 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
         user: userDetails,
         accessToken: access_token,
         refreshToken: refresh_token,
+        expiresIn: expires_in,
         isNewUser: !existingUser,
       });
     }
