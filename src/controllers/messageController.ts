@@ -457,92 +457,270 @@ export const getDmThreadMessages = async (req: Request, res: Response): Promise<
         return res.status(500).json({ error: 'Internal server error' });
     }
 };
-
 export const getDmMessages = async (req: Request, res: Response): Promise<void> => {
     try {
-        const user_id = req.params.userId;
-        const offset = parseInt(req.query?.offset as string, 10) || 0;
-        const pageSize = 15;
+        const user_id = req.params.userId
+        const offset = parseInt(req.query?.offset as string, 10) || 0
+        const pageSize = 15
 
         if (!user_id) {
-            res.status(400).json({ error: 'Invalid user_id parameter.' });
-            return;
+            res.status(400).json({ error: 'Invalid user_id parameter.' })
+            return
         }
 
         const { data: threads } = await supabase
             .from('dm_threads')
             .select('id, user1_id, user2_id')
-            .or(`user1_id.eq.${user_id},user2_id.eq.${user_id}`);
+            .or(`user1_id.eq.${user_id},user2_id.eq.${user_id}`)
 
         if (!threads || threads.length === 0) {
-            res.status(200).json({ threads: [] });
-            return;
+            res.status(200).json({ threads: [] })
+            return
         }
 
-        const threadIds = threads.map(t => t.id);
-        const otherUserIds = threads.map(t =>
+        // Deduplicate threads by other user
+        const seenPairs = new Map<string, DmThread>()
+        threads.forEach(thread => {
+            const otherUserId =
+                thread.user1_id === user_id ? thread.user2_id : thread.user1_id
+            if (!seenPairs.has(otherUserId)) {
+                seenPairs.set(otherUserId, thread)
+            }
+        })
+
+        const uniqueThreads = Array.from(seenPairs.values())
+        const threadIds = uniqueThreads.map(t => t.id)
+        const otherUserIds = uniqueThreads.map(t =>
             t.user1_id === user_id ? t.user2_id : t.user1_id
-        );
+        )
 
         const { data: usersData } = await supabase
             .from('users')
             .select('id, username, avatar_url')
-            .in('id', otherUserIds);
+            .in('id', otherUserIds)
 
-        const usersMap = new Map<string, any>();
-        if (usersData) {
-            usersData.forEach(u => usersMap.set(u.id, u));
-        }
+        const usersMap = new Map<string, any>()
+        usersData?.forEach(u => usersMap.set(u.id, u))
 
+        const { data: readStatuses } = await supabase
+            .from('thread_read_status')
+            .select('thread_id, last_read_at')
+            .eq('user_id', user_id)
+            .in('thread_id', threadIds)
 
-        // Total count for ALL threads messages combined
-        const { count } = await supabase
-            .from('dm_messages')
-            .select('*', { count: 'exact', head: true })
-            .in('thread_id', threadIds);
+        const readStatusMap = new Map<string, string>()
+        readStatuses?.forEach(r => readStatusMap.set(r.thread_id, r.last_read_at))
 
-        const totalCount = count || 0;
-
-        // Paginated fetch
-        const { data: paginatedMessages } = await supabase
+        const { data: messages } = await supabase
             .from('dm_messages')
             .select('*')
             .in('thread_id', threadIds)
             .order('timestamp', { ascending: false })
-            .range(offset, offset + pageSize - 1);
+            .range(offset, offset + pageSize - 1)
 
-        const hasMore = offset + pageSize < totalCount;
+        const messagesByThread = new Map<string, any[]>()
+        messages?.forEach(msg => {
+            const arr = messagesByThread.get(msg.thread_id) || []
+            arr.push(msg)
+            messagesByThread.set(msg.thread_id, arr)
+        })
 
-        // Group by thread for the frontend
-        const messagesByThread = new Map<string, any[]>();
-        
-        if (paginatedMessages) {
-            paginatedMessages.forEach(msg => {
-                const arr = messagesByThread.get(msg.thread_id) || [];
-                arr.push(msg);
-                messagesByThread.set(msg.thread_id, arr);
+        const groupedThreads = uniqueThreads.map(thread => {
+            const otherUserId =
+                thread.user1_id === user_id ? thread.user2_id : thread.user1_id
+            const otherUser = usersMap.get(otherUserId) || null
+            const msgs = messagesByThread.get(thread.id) || []
+
+            const lastReadAt = readStatusMap.get(thread.id)
+            const unreadCount = msgs.filter(m => {
+                if (m.sender_id === user_id) return false
+                if (!lastReadAt) return true
+                return new Date(m.timestamp) > new Date(lastReadAt)
+            }).length
+
+            const latestTimestamp =
+                msgs.length > 0 ? msgs[0].timestamp : new Date(0).toISOString()
+
+            return {
+                thread_id: thread.id,
+                messages: msgs.slice(0, 15),
+                other_user: otherUser,
+                unread_count: unreadCount,
+                recipient_id: otherUserId,
+                latest_message_timestamp: latestTimestamp
+            }
+        })
+
+        groupedThreads.sort(
+            (a, b) =>
+                new Date(b.latest_message_timestamp).getTime() -
+                new Date(a.latest_message_timestamp).getTime()
+        )
+
+        res.status(200).json({ threads: groupedThreads })
+    } catch (err) {
+        console.error('Error in getDmMessages:', err)
+        res.status(500).json({ error: 'Internal server error' })
+    }
+}
+
+// Get unread message counts per thread
+export const getUnreadCounts = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const user_id = req.params.userId;
+
+        if (!user_id || typeof user_id !== 'string') {
+            res.status(400).json({ error: 'Invalid user_id parameter.' });
+            return;
+        }
+
+        // Get all threads for the user
+        const { data: threads, error: threadError } = await supabase
+            .from('dm_threads')
+            .select('id, user1_id, user2_id')
+            .or(`user1_id.eq.${user_id},user2_id.eq.${user_id}`);
+
+        if (threadError) {
+            console.error('Error fetching threads:', threadError);
+            res.status(500).json({ error: 'Failed to fetch threads.' });
+            return;
+        }
+
+        if (!threads || threads.length === 0) {
+            res.status(200).json({ unreadCounts: {}, totalUnread: 0 });
+            return;
+        }
+
+        // Deduplicate threads
+        const seenPairs = new Map<string, any>();
+        threads.forEach(thread => {
+            const otherUserId = thread.user1_id === user_id ? thread.user2_id : thread.user1_id;
+            if (!seenPairs.has(otherUserId)) {
+                seenPairs.set(otherUserId, thread);
+            }
+        });
+        const uniqueThreads = Array.from(seenPairs.values());
+        const threadIds = uniqueThreads.map(t => t.id);
+
+        // Get the last read timestamp for each thread
+        const { data: readStatuses, error: readError } = await supabase
+            .from('thread_read_status')
+            .select('thread_id, last_read_at')
+            .eq('user_id', user_id)
+            .in('thread_id', threadIds);
+
+        if (readError && readError.code !== 'PGRST116') {
+            console.error('Error fetching read statuses:', readError);
+            // If table doesn't exist, fall back to counting all messages
+        }
+
+        // Create a map of thread_id to last_read_at
+        const readStatusMap = new Map<string, string>();
+        if (readStatuses) {
+            readStatuses.forEach(status => {
+                readStatusMap.set(status.thread_id, status.last_read_at);
             });
         }
 
-        const groupedThreads = threads.map(t => {
-            const otherUserId = t.user1_id === user_id ? t.user2_id : t.user1_id;
-            const otherUser = usersMap.get(otherUserId) || null;
+        // Get unread message counts for each thread
+        // Messages are unread if:
+        // 1. Sender is NOT the current user
+        // 2. Message timestamp is AFTER the last_read_at timestamp (or no read status exists)
+        const { data: messages, error: msgError } = await supabase
+            .from('dm_messages')
+            .select('thread_id, sender_id, id, timestamp')
+            .in('thread_id', threadIds)
+            .neq('sender_id', user_id); // Only messages sent by others
 
-            return {
-                thread_id: t.id,
-                messages: messagesByThread.get(t.id) || [],
-                other_user: otherUser
-            };
+        if (msgError) {
+            console.error('Error fetching messages:', msgError);
+            res.status(500).json({ error: 'Failed to fetch messages.' });
+            return;
+        }
+
+        // Count unread messages per thread
+        const unreadCounts: Record<string, number> = {};
+        let totalUnread = 0;
+
+        uniqueThreads.forEach(thread => {
+            const lastReadAt = readStatusMap.get(thread.id);
+            const threadMessages = messages?.filter(m => {
+                if (m.thread_id !== thread.id) return false;
+                
+                // If no read status, all messages are unread
+                if (!lastReadAt) return true;
+                
+                // Message is unread if timestamp is after last_read_at
+                return new Date(m.timestamp) > new Date(lastReadAt);
+            }) || [];
+            
+            unreadCounts[thread.id] = threadMessages.length;
+            totalUnread += threadMessages.length;
         });
 
-        res.status(200).json({
-            threads: groupedThreads,
-            hasMore,
-            totalCount
+        res.status(200).json({ 
+            unreadCounts,
+            totalUnread 
         });
-
     } catch (err) {
-        console.error(err);
+        console.error('Error in getUnreadCounts:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+};
+
+// Mark messages in a thread as read
+export const markThreadAsRead = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const { threadId } = req.params;
+        const { userId } = req.body;
+
+        if (!threadId || !userId) {
+            res.status(400).json({ error: 'Thread ID and user ID are required.' });
+            return;
+        }
+
+        // Get the latest message timestamp in this thread
+        const { data: latestMessage, error: msgError } = await supabase
+            .from('dm_messages')
+            .select('timestamp')
+            .eq('thread_id', threadId)
+            .order('timestamp', { ascending: false })
+            .limit(1)
+            .single();
+
+        if (msgError && msgError.code !== 'PGRST116') { // PGRST116 is "no rows returned"
+            console.error('Error fetching latest message:', msgError);
+        }
+
+        const lastReadAt = latestMessage?.timestamp || new Date().toISOString();
+
+        // Upsert the last_read_at timestamp for this thread and user
+        // This uses a thread_read_status table (need to create if doesn't exist)
+        const { error: upsertError } = await supabase
+            .from('thread_read_status')
+            .upsert(
+                {
+                    thread_id: threadId,
+                    user_id: userId,
+                    last_read_at: lastReadAt,
+                    updated_at: new Date().toISOString()
+                },
+                {
+                    onConflict: 'thread_id,user_id'
+                }
+            );
+
+        if (upsertError) {
+            // If table doesn't exist, log it but don't fail
+            console.error('Error upserting thread read status:', upsertError);
+            // For now, return success anyway to not break the UI
+            res.status(200).json({ success: true, message: 'Read tracking table not yet created' });
+            return;
+        }
+
+        res.status(200).json({ success: true });
+    } catch (err) {
+        console.error('Error in markThreadAsRead:', err);
         res.status(500).json({ error: 'Internal server error' });
     }
 };

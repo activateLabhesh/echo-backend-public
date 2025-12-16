@@ -2,19 +2,16 @@ import { Request, Response } from 'express';
 import {supabase,supabaseAdmin} from '../client/supabase'
 import jwt from 'jsonwebtoken';
 
-// Access token expires in 1 hour (matches Supabase JWT expiration)
-const ACCESS_TOKEN_MAX_AGE = 60 * 60; // 1 hour in seconds
-// Refresh token expires in 30 days
-const REFRESH_TOKEN_MAX_AGE = 60 * 60 * 24 * 30; // 30 days in seconds
+const ACCESS_TOKEN_MAX_AGE = 60 * 60
+const REFRESH_TOKEN_MAX_AGE = 60 * 60 * 24 * 30
 
 const cookieOptions = {
   httpOnly: true,
   secure: true,
   sameSite: 'none' as const,
   path: '/',
-  maxAge: ACCESS_TOKEN_MAX_AGE,
-};
-
+  maxAge: ACCESS_TOKEN_MAX_AGE * 1000
+}
 
 //test route
 export const testRoute = (_req: Request, res: Response) => {
@@ -74,7 +71,7 @@ export const register = async (req: Request, res: Response): Promise <void> => {
       date_of_birth,
       avatar_url: null,
       status: 'offline',
-      bio:'', //present in supabase
+      bio:'',
     },
   ]);
 
@@ -90,10 +87,11 @@ export const register = async (req: Request, res: Response): Promise <void> => {
 // login route
 export const login = async (req: Request, res: Response):Promise <void> => {
   const { identifier, password } = req.body;
-  const isMobileApp = req.headers['x-client-type'] === 'Mobile'; //checks where the request is from
+  const isMobileApp = req.headers['x-client-type'] === 'Mobile';
 
-  let email =identifier;
-  //check if identifier is not email, then it is username. search database for that username and extract email from it
+  let email = identifier;
+  
+  // Check if identifier is not email, then it is username
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier)) {
     const { data, error } = await supabaseAdmin
       .from('users')
@@ -119,100 +117,125 @@ export const login = async (req: Request, res: Response):Promise <void> => {
     return
   }
 
-  const { access_token, refresh_token, user } = data.session;
+  const { access_token, refresh_token, user, expires_in } = data.session;
 
   const { data: userDetails, error: fetchError } = await supabaseAdmin
-  .from('users')
-  .select('id, email, username, fullname, avatar_url, bio, date_of_birth, status,created_at')
-  .eq('id', user.id)
-  .maybeSingle();
+    .from('users')
+    .select('id, email, username, fullname, avatar_url, bio, date_of_birth, status, created_at')
+    .eq('id', user.id)
+    .maybeSingle();
 
-if (fetchError || !userDetails) {
-  res.status(500).json({ message: 'Failed to fetch user profile details' });
-  return;
-}
+  if (fetchError || !userDetails) {
+    res.status(500).json({ message: 'Failed to fetch user profile details' });
+    return;
+  }
 
-  if(isMobileApp){
+  if (isMobileApp) {
     res.status(200).json({
-      message : "Logged In",
-      user: userDetails,
-      accessToken:access_token,
-      refreshToken:refresh_token,
-      expiresIn: data.session.expires_in,
-    })
-  } else{
-    res.cookie('access_token', access_token, cookieOptions);
-    res.cookie('refresh_token', refresh_token, {
-      ...cookieOptions,
-      maxAge: REFRESH_TOKEN_MAX_AGE,
-    });
-    console.log("Logged in the user.");
-    res.status(200).json({ 
-      message: 'Logged in', 
+      message: "Logged in successfully",
       user: userDetails,
       accessToken: access_token,
       refreshToken: refresh_token,
-      expiresIn: data.session.expires_in
+      expiresIn: expires_in, // in seconds
+    });
+  } else {
+res.cookie('access_token', access_token, cookieOptions)
+res.cookie('refresh_token', refresh_token, {
+  ...cookieOptions,
+  maxAge: REFRESH_TOKEN_MAX_AGE * 1000
+})
+
+    
+    console.log("User logged in successfully");
+    res.status(200).json({ 
+      message: 'Logged in successfully', 
+      user: userDetails,
+      accessToken: access_token,
+      refreshToken: refresh_token,
+      expiresIn: expires_in // in seconds
     });
   }
 };
 
-//refresh tokens
-export const refreshToken = async (req: Request, res: Response): Promise <void> => {
-  const isMobileApp = req.headers['x-client-type'] === 'Mobile';
+// refresh tokens
+export const refreshToken = async (req: Request, res: Response): Promise<void> => {
+  const isMobileApp = req.headers['x-client-type'] === 'Mobile'
 
-  let refresh_token: string | undefined;
+  let refresh_token: string | undefined
 
   if (isMobileApp) {
-    refresh_token = req.body.refresh_token;
+    refresh_token = req.body.refreshToken || req.body.refresh_token
   } else {
-    refresh_token = req.cookies.refresh_token;
+    refresh_token = req.cookies.refresh_token
   }
 
   if (!refresh_token) {
-    res.status(401).json({ message: 'Refresh token missing' });
+    res.status(401).json({
+      message: 'Refresh token missing',
+      error: 'NO_REFRESH_TOKEN'
+    })
     return
   }
 
-  const { data, error } = await supabase.auth.refreshSession({ refresh_token });
+  try {
+    const { data, error } = await supabase.auth.refreshSession({ refresh_token })
 
-  if (error || !data.session) {
-    res.status(401).json({ message: 'Invalid refresh token' });
-    return
+    if (error || !data.session) {
+      res.status(401).json({
+        message: 'Invalid or expired refresh token',
+        error: 'INVALID_REFRESH_TOKEN'
+      })
+      return
+    }
+
+    const { access_token, refresh_token: newRefreshToken, user, expires_in } = data.session
+
+    const { data: userDetails } = await supabaseAdmin
+      .from('users')
+      .select('id, email, username, fullname, avatar_url, bio, date_of_birth, status, created_at')
+      .eq('id', user.id)
+      .maybeSingle()
+
+    if (isMobileApp) {
+      res.status(200).json({
+        message: 'Token refreshed successfully',
+        accessToken: access_token,
+        refreshToken: newRefreshToken,
+        expiresIn: expires_in,
+        user: userDetails
+      })
+    } else {
+      res.cookie('access_token', access_token, cookieOptions)
+      res.cookie('refresh_token', newRefreshToken, {
+        ...cookieOptions,
+        maxAge: REFRESH_TOKEN_MAX_AGE * 1000
+      })
+
+      res.status(200).json({
+        message: 'Token refreshed successfully',
+        accessToken: access_token,
+        refreshToken: newRefreshToken,
+        expiresIn: expires_in,
+        user: userDetails
+      })
+    }
+  } catch (err) {
+    console.error('Refresh token error:', err)
+    res.status(500).json({
+      message: 'Failed to refresh token',
+      error: 'SERVER_ERROR'
+    })
   }
-
-  const { access_token, refresh_token: newRefreshToken, user } = data.session;
-  console.log("refresh", data.session.expires_in);
-  if (isMobileApp) {
-    res.status(200).json({
-      message: 'Token refreshed',
-      accessToken: access_token,
-      refreshToken: newRefreshToken,
-      user: user,
-      expiresIn: data.session.expires_in ///////////////////////////////////////////////////////
-    });
-  } else {
-    res.cookie('access_token', access_token, cookieOptions);
-    res.cookie('refresh_token', newRefreshToken, {
-      ...cookieOptions,
-      maxAge: REFRESH_TOKEN_MAX_AGE,
-    });
-    res.status(200).json({ 
-      message: 'Token refreshed',
-      accessToken: access_token,
-      refreshToken: newRefreshToken,
-      expiresIn: data.session.expires_in
-    });
-  }
-};
-
-//logout route
+}
+// logout route
 export const logout = async (req: Request, res: Response): Promise<void> => {
-
-  const isMobileApp = req.headers['X-Client-Type'] === 'mobile-app';
-  if(isMobileApp){
+  const isMobileApp = req.headers['x-client-type'] === 'Mobile';
+  
+  if (isMobileApp) {
     res.status(200).json({ message: 'Logged out successfully' });
+    return;
   }
+  
   const accessToken = req.cookies.access_token;
 
   if (!accessToken) {
@@ -229,7 +252,7 @@ export const logout = async (req: Request, res: Response): Promise<void> => {
   }
 };
 
-//send reset password link
+// send reset password link
 export const sendResetPasswordEmail = async (req: Request, res: Response):Promise<void> => {
   const { email } = req.body;
 
@@ -251,7 +274,7 @@ export const sendResetPasswordEmail = async (req: Request, res: Response):Promis
   return
 };
 
-//update password using reset session
+// update password using reset session
 export const updatePassword = async (req: Request, res: Response):Promise<void> => {
   const authHeader = req.headers['authorization'];
   const access_token = authHeader?.split(' ')[1];
@@ -262,7 +285,7 @@ export const updatePassword = async (req: Request, res: Response):Promise<void> 
     return
   }
 
-  //extract user id from the token
+  // extract user id from the token
   let userId: string;
   try {
     const { data: userData, error } = await supabase.auth.getUser(access_token);
@@ -276,7 +299,7 @@ export const updatePassword = async (req: Request, res: Response):Promise<void> 
     return;
   }
 
-  //update password using admin 
+  // update password using admin 
   const { data, error } = await supabaseAdmin.auth.admin.updateUserById(userId, {
     password: new_password,
   });
@@ -292,7 +315,6 @@ export const updatePassword = async (req: Request, res: Response):Promise<void> 
 
 // change password for logged-in users
 export const changePassword = async (req: Request, res: Response): Promise<void> => {
-
   const authHeader = req.headers['authorization'];
   const headerToken = authHeader?.startsWith('Bearer ') ? authHeader.split(' ')[1] : undefined;
   const cookieToken = req.cookies?.access_token;
@@ -363,12 +385,11 @@ export const authorize = async (req: Request, res: Response): Promise<void> => {
 
   } catch (err: any) {
     console.error('Error in authorize route:', err.message || err);
-    // Catch any unexpected errors during token processing
     res.status(500).json({ message: 'Internal server error during authorization.' });
   }
 };
 
-//handle OAuth user (Google, etc.)
+// handle OAuth user (Google, etc.)
 export const handleOAuthUser = async (req: Request, res: Response): Promise<void> => {
   const isMobileApp = req.headers['x-client-type'] === 'Mobile';
   const authHeader = req.headers.authorization;
@@ -390,20 +411,21 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
     }
 
     const supabaseUser = userData.user;
-    // console.log('OAuth user:', supabaseUser.email);
 
     // Check if user exists in our users table by ID
     let { data: existingUser, error: fetchError } = await supabaseAdmin
       .from('users')
-      .select('id, email, username, fullname, avatar_url, bio, date_of_birth, status, created_at')
+      .select('*')
       .eq('id', supabaseUser.id)
       .maybeSingle();
 
-    if (fetchError) {
-      console.error('Error fetching user by ID:', fetchError);
+    if (fetchError && fetchError.code !== 'PGRST116') {
+      console.error('Error checking existing user:', fetchError);
+      res.status(500).json({ message: 'Database error' });
+      return;
     }
 
-    // If not found by ID, check by email (user might have registered with email/password before)
+    // If not found by ID, check by email
     if (!existingUser && supabaseUser.email) {
       const { data: emailUser, error: emailError } = await supabaseAdmin
         .from('users')
@@ -416,9 +438,7 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
       }
 
       if (emailUser) {
-        // console.log('Found existing user by email, updating ID to link OAuth account');
-        
-        // Update the existing user's ID to match the new Supabase OAuth ID
+        // Update the existing user's ID to match the OAuth ID
         const { error: updateError } = await supabaseAdmin
           .from('users')
           .update({ id: supabaseUser.id })
@@ -426,10 +446,8 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
 
         if (updateError) {
           console.error('Error linking OAuth account:', updateError);
-          // If we can't update the ID, just use the existing user data
           existingUser = emailUser;
         } else {
-          // Fetch the updated user
           const { data: updatedUser } = await supabaseAdmin
             .from('users')
             .select('id, email, username, fullname, avatar_url, bio, date_of_birth, status, created_at')
@@ -437,7 +455,6 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
             .maybeSingle();
           
           existingUser = updatedUser || emailUser;
-          // console.log('OAuth account linked successfully for:', emailUser.username);
         }
       }
     }
@@ -446,8 +463,6 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
 
     // If user doesn't exist, create them
     if (!existingUser) {
-      // console.log('Creating new OAuth user:', supabaseUser.email);
-
       // Generate username from email or OAuth name
       let username = supabaseUser.user_metadata?.full_name?.replace(/\s+/g, '_').toLowerCase() 
                      || supabaseUser.email?.split('@')[0] 
@@ -460,7 +475,6 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
         .eq('username', username)
         .maybeSingle();
 
-      // If username exists, append random numbers
       if (usernameCheck) {
         username = `${username}_${Math.floor(Math.random() * 9999)}`;
       }
@@ -472,33 +486,25 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
         fullname: supabaseUser.user_metadata?.full_name || '',
         avatar_url: supabaseUser.user_metadata?.avatar_url || null,
         status: 'offline',
-        bio: '',
+        bio: "Hey, I'm using echo! ",
         date_of_birth: null,
       };
 
-      const { error: insertError } = await supabaseAdmin
+      const { data: upsertedUser, error: upsertError } = await supabaseAdmin
         .from('users')
-        .insert([newUser]);
+        .upsert([newUser], { onConflict: 'id' })
+        .select('id, email, username, fullname, avatar_url, bio, date_of_birth, status, created_at')
+        .single();
 
-      if (insertError) {
-        console.error('Error creating OAuth user:', insertError);
+      if (upsertError) {
+        console.error('Error creating OAuth user:', upsertError);
         res.status(500).json({ message: 'Failed to create user record' });
         return;
       }
 
-      // Fetch the newly created user
-      const { data: newUserData } = await supabaseAdmin
-        .from('users')
-        .select('id, email, username, fullname, avatar_url, bio, date_of_birth, status, created_at')
-        .eq('id', supabaseUser.id)
-        .maybeSingle();
-
-      userDetails = newUserData;
-      // console.log('OAuth user created successfully:', username);
+      userDetails = upsertedUser;
     } else {
-      // console.log('Existing user found:', existingUser.username);
-      
-      // Optionally update avatar if user doesn't have one
+      // Update avatar if user doesn't have one
       if (!existingUser.avatar_url && supabaseUser.user_metadata?.avatar_url) {
         await supabaseAdmin
           .from('users')
@@ -509,9 +515,10 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
       }
     }
 
-    // Get refresh token from session
+    // Get refresh token and expiry from session
     const { data: sessionData } = await supabase.auth.getSession();
     const refresh_token = sessionData?.session?.refresh_token || '';
+    const expires_in = sessionData?.session?.expires_in || 3600;
 
     if (isMobileApp) {
       res.status(200).json({
@@ -519,21 +526,24 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
         user: userDetails,
         accessToken: access_token,
         refreshToken: refresh_token,
+        expiresIn: expires_in,
         isNewUser: !existingUser,
       });
     } else {
       res.cookie('access_token', access_token, cookieOptions);
       if (refresh_token) {
         res.cookie('refresh_token', refresh_token, {
-          ...cookieOptions,
-          maxAge: REFRESH_TOKEN_MAX_AGE,
-        });
+  ...cookieOptions,
+  maxAge: REFRESH_TOKEN_MAX_AGE * 1000
+})
+
       }
       res.status(200).json({
         message: 'OAuth login successful',
         user: userDetails,
         accessToken: access_token,
         refreshToken: refresh_token,
+        expiresIn: expires_in,
         isNewUser: !existingUser,
       });
     }
