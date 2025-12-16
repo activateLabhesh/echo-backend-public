@@ -457,141 +457,112 @@ export const getDmThreadMessages = async (req: Request, res: Response): Promise<
         return res.status(500).json({ error: 'Internal server error' });
     }
 };
-
 export const getDmMessages = async (req: Request, res: Response): Promise<void> => {
     try {
-        const user_id = req.params.userId;
+        const user_id = req.params.userId
+        const offset = parseInt(req.query?.offset as string, 10) || 0
+        const pageSize = 15
 
-        if (!user_id || typeof user_id !== 'string') {
-            res.status(400).json({ error: 'Invalid user_id parameter.' });
-            return;
+        if (!user_id) {
+            res.status(400).json({ error: 'Invalid user_id parameter.' })
+            return
         }
 
-        const { data: threads, error: threadError } = await supabase
+        const { data: threads } = await supabase
             .from('dm_threads')
             .select('id, user1_id, user2_id')
-            .or(`user1_id.eq.${user_id},user2_id.eq.${user_id}`) as { data: DmThread[]; error: any };
-
-        if (threadError) {
-            console.error('Error fetching user threads:', threadError);
-            res.status(500).json({ error: 'Failed to fetch user threads.' });
-            return;
-        }
+            .or(`user1_id.eq.${user_id},user2_id.eq.${user_id}`)
 
         if (!threads || threads.length === 0) {
-            res.status(200).json({ threads: [] });
-            return;
+            res.status(200).json({ threads: [] })
+            return
         }
 
-        // Deduplicate threads - keep only one thread per unique user pair
-        const seenPairs = new Map<string, DmThread>();
+        // Deduplicate threads by other user
+        const seenPairs = new Map<string, DmThread>()
         threads.forEach(thread => {
-            const otherUserId = thread.user1_id === user_id ? thread.user2_id : thread.user1_id;
-            // Use the other user's ID as the unique key
+            const otherUserId =
+                thread.user1_id === user_id ? thread.user2_id : thread.user1_id
             if (!seenPairs.has(otherUserId)) {
-                seenPairs.set(otherUserId, thread);
+                seenPairs.set(otherUserId, thread)
             }
-        });
-        
-        const uniqueThreads = Array.from(seenPairs.values());
+        })
 
-        const otherUserIds = uniqueThreads.map(thread => 
-            thread.user1_id === user_id ? thread.user2_id : thread.user1_id
-        );
-        const threadIds = uniqueThreads.map(thread => thread.id);
+        const uniqueThreads = Array.from(seenPairs.values())
+        const threadIds = uniqueThreads.map(t => t.id)
+        const otherUserIds = uniqueThreads.map(t =>
+            t.user1_id === user_id ? t.user2_id : t.user1_id
+        )
 
-        const { data: usersData, error: usersError } = await supabase
+        const { data: usersData } = await supabase
             .from('users')
             .select('id, username, avatar_url')
-            .in('id', otherUserIds);
+            .in('id', otherUserIds)
 
-        if (usersError) {
-            console.error('Error fetching user profiles:', usersError);
-            res.status(500).json({ error: 'Failed to fetch user profiles.' });
-            return;
-        }
-        const usersMap = new Map(usersData.map(user => [user.id, user]));
+        const usersMap = new Map<string, any>()
+        usersData?.forEach(u => usersMap.set(u.id, u))
 
-        const { data: allMessages, error: messagesError } = await supabase
-            .from('dm_messages')
-            .select('*')
-            .in('thread_id', threadIds)
-            .order('timestamp', { ascending: true });
-
-        if (messagesError) {
-            console.error('Error fetching messages:', messagesError);
-            res.status(500).json({ error: 'Failed to fetch messages.' });
-            return;
-        }
-
-        const messagesByThread = new Map<string, any[]>();
-        allMessages.forEach(message => {
-            const threadMessages = messagesByThread.get(message.thread_id) || [];
-            threadMessages.push(message);
-            messagesByThread.set(message.thread_id, threadMessages);
-        });
-
-        // Get read statuses for all threads to calculate accurate unread counts
-        const { data: readStatuses, error: readError } = await supabase
+        const { data: readStatuses } = await supabase
             .from('thread_read_status')
             .select('thread_id, last_read_at')
             .eq('user_id', user_id)
-            .in('thread_id', threadIds);
+            .in('thread_id', threadIds)
 
-        if (readError && readError.code !== 'PGRST116') {
-            console.error('Error fetching read statuses:', readError);
-        }
+        const readStatusMap = new Map<string, string>()
+        readStatuses?.forEach(r => readStatusMap.set(r.thread_id, r.last_read_at))
 
-        // Create a map of thread_id to last_read_at
-        const readStatusMap = new Map<string, string>();
-        if (readStatuses) {
-            readStatuses.forEach(status => {
-                readStatusMap.set(status.thread_id, status.last_read_at);
-            });
-        }
+        const { data: messages } = await supabase
+            .from('dm_messages')
+            .select('*')
+            .in('thread_id', threadIds)
+            .order('timestamp', { ascending: false })
+            .range(offset, offset + pageSize - 1)
 
-        const groupedMessages = uniqueThreads.map(thread => {
-            const otherUserId = thread.user1_id === user_id ? thread.user2_id : thread.user1_id;
-            const otherUser = usersMap.get(otherUserId) || null;
-            const messages = messagesByThread.get(thread.id) || [];
-            const recentMessages = messages.slice(-15);
-            
-            // Calculate unread count using last_read_at timestamp
-            const lastReadAt = readStatusMap.get(thread.id);
-            const unreadCount = messages.filter(m => {
-                if (m.sender_id === user_id) return false; // Don't count own messages
-                if (!lastReadAt) return true; // If never read, all are unread
-                return new Date(m.timestamp) > new Date(lastReadAt); // Only count messages after last read
-            }).length;
-            
-            // Get latest message timestamp for sorting
-            const latestMessageTimestamp = messages.length > 0 
-                ? messages[messages.length - 1].timestamp 
-                : new Date(0).toISOString();
+        const messagesByThread = new Map<string, any[]>()
+        messages?.forEach(msg => {
+            const arr = messagesByThread.get(msg.thread_id) || []
+            arr.push(msg)
+            messagesByThread.set(msg.thread_id, arr)
+        })
+
+        const groupedThreads = uniqueThreads.map(thread => {
+            const otherUserId =
+                thread.user1_id === user_id ? thread.user2_id : thread.user1_id
+            const otherUser = usersMap.get(otherUserId) || null
+            const msgs = messagesByThread.get(thread.id) || []
+
+            const lastReadAt = readStatusMap.get(thread.id)
+            const unreadCount = msgs.filter(m => {
+                if (m.sender_id === user_id) return false
+                if (!lastReadAt) return true
+                return new Date(m.timestamp) > new Date(lastReadAt)
+            }).length
+
+            const latestTimestamp =
+                msgs.length > 0 ? msgs[0].timestamp : new Date(0).toISOString()
 
             return {
                 thread_id: thread.id,
-                messages: recentMessages,
+                messages: msgs.slice(0, 15),
                 other_user: otherUser,
                 unread_count: unreadCount,
                 recipient_id: otherUserId,
-                latest_message_timestamp: latestMessageTimestamp
-            };
-        });
-        
-        // Sort threads by latest message timestamp (most recent first)
-        groupedMessages.sort((a, b) => {
-            const timeA = new Date(a.latest_message_timestamp).getTime();
-            const timeB = new Date(b.latest_message_timestamp).getTime();
-            return timeB - timeA; // Descending order (newest first)
-        });
-        
-        res.status(200).json({ threads: groupedMessages });
+                latest_message_timestamp: latestTimestamp
+            }
+        })
+
+        groupedThreads.sort(
+            (a, b) =>
+                new Date(b.latest_message_timestamp).getTime() -
+                new Date(a.latest_message_timestamp).getTime()
+        )
+
+        res.status(200).json({ threads: groupedThreads })
     } catch (err) {
-        console.error('Unexpected server error in getDmMessages:', err);
-        res.status(500).json({ error: 'Internal server error' });
+        console.error('Error in getDmMessages:', err)
+        res.status(500).json({ error: 'Internal server error' })
     }
-};
+}
 
 // Get unread message counts per thread
 export const getUnreadCounts = async (req: Request, res: Response): Promise<void> => {

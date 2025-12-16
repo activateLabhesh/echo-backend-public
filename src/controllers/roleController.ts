@@ -496,9 +496,15 @@ export const assignRoleToUser = async (req: AuthenticatedRequest, res: Response)
       return;
     }
 
-    // Only owner can assign owner/admin roles
-    if ((role.role_type === 'owner' || role.role_type === 'admin') && !isOwner) {
-      res.status(403).json({ error: 'Only the owner can assign owner/admin roles' });
+    // Prevent assigning owner role - there can only be ONE owner per server
+    if (role.role_type === 'owner') {
+      res.status(403).json({ error: 'Cannot assign owner role. There can only be one owner per server. Use ownership transfer instead.' });
+      return;
+    }
+
+    // Only owner can assign admin roles
+    if (role.role_type === 'admin' && !isOwner) {
+      res.status(403).json({ error: 'Only the owner can assign admin roles' });
       return;
     }
 

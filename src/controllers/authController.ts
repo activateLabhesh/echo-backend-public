@@ -2,14 +2,16 @@ import { Request, Response } from 'express';
 import {supabase,supabaseAdmin} from '../client/supabase'
 import jwt from 'jsonwebtoken';
 
+const ACCESS_TOKEN_MAX_AGE = 60 * 60
+const REFRESH_TOKEN_MAX_AGE = 60 * 60 * 24 * 30
+
 const cookieOptions = {
   httpOnly: true,
   secure: true,
   sameSite: 'none' as const,
   path: '/',
-  maxAge: 60 * 60 * 1000 , // 1 hour in milliseconds
-};
-
+  maxAge: ACCESS_TOKEN_MAX_AGE * 1000
+}
 
 //test route
 export const testRoute = (_req: Request, res: Response) => {
@@ -48,7 +50,7 @@ export const register = async (req: Request, res: Response): Promise <void> => {
     email,
     password,
     options: {
-      emailRedirectTo: `https://echo.ieeecsvit.com/auth/callback?next=/login`,
+      emailRedirectTo: `${process.env.FRONTEND_URL || 'https://echo.ieeecsvit.com'}/auth/callback`,
     },
   });
 
@@ -137,11 +139,12 @@ export const login = async (req: Request, res: Response):Promise <void> => {
       expiresIn: expires_in, // in seconds
     });
   } else {
-    res.cookie('access_token', access_token, cookieOptions);
-    res.cookie('refresh_token', refresh_token, {
-      ...cookieOptions,
-      maxAge: 60 * 60 * 24 * 30 * 1000, // 30 days
-    });
+res.cookie('access_token', access_token, cookieOptions)
+res.cookie('refresh_token', refresh_token, {
+  ...cookieOptions,
+  maxAge: REFRESH_TOKEN_MAX_AGE * 1000
+})
+
     
     console.log("User logged in successfully");
     res.status(200).json({ 
@@ -155,94 +158,75 @@ export const login = async (req: Request, res: Response):Promise <void> => {
 };
 
 // refresh tokens
-export const refreshToken = async (req: Request, res: Response): Promise <void> => {
-  const isMobileApp = req.headers['x-client-type'] === 'Mobile';
+export const refreshToken = async (req: Request, res: Response): Promise<void> => {
+  const isMobileApp = req.headers['x-client-type'] === 'Mobile'
 
-  let refresh_token: string | undefined;
+  let refresh_token: string | undefined
 
   if (isMobileApp) {
-    // Accept both formats for mobile
-    refresh_token = req.body.refreshToken || req.body.refresh_token;
+    refresh_token = req.body.refreshToken || req.body.refresh_token
   } else {
-    refresh_token = req.cookies.refresh_token;
+    refresh_token = req.cookies.refresh_token
   }
 
   if (!refresh_token) {
-    res.status(401).json({ 
+    res.status(401).json({
       message: 'Refresh token missing',
       error: 'NO_REFRESH_TOKEN'
-    });
-    return;
+    })
+    return
   }
 
   try {
-    const { data, error } = await supabase.auth.refreshSession({ refresh_token });
+    const { data, error } = await supabase.auth.refreshSession({ refresh_token })
 
     if (error || !data.session) {
-      console.error('Refresh token error:', error);
-      res.status(401).json({ 
+      res.status(401).json({
         message: 'Invalid or expired refresh token',
         error: 'INVALID_REFRESH_TOKEN'
-      });
-      return;
+      })
+      return
     }
 
-    const { access_token, refresh_token: newRefreshToken, user, expires_in } = data.session;
-    
-    // Fetch complete user details from database
-    const { data: userDetails, error: fetchError } = await supabaseAdmin
+    const { access_token, refresh_token: newRefreshToken, user, expires_in } = data.session
+
+    const { data: userDetails } = await supabaseAdmin
       .from('users')
       .select('id, email, username, fullname, avatar_url, bio, date_of_birth, status, created_at')
       .eq('id', user.id)
-      .maybeSingle();
-
-    console.log('Token refreshed for user:', user.id);
-    console.log('New token expires in:', expires_in, 'seconds');
+      .maybeSingle()
 
     if (isMobileApp) {
       res.status(200).json({
         message: 'Token refreshed successfully',
         accessToken: access_token,
         refreshToken: newRefreshToken,
-        expiresIn: expires_in, // in seconds
-        user: userDetails || {
-          id: user.id,
-          email: user.email,
-          username: user.user_metadata?.username,
-          fullname: user.user_metadata?.fullname,
-          avatar_url: user.user_metadata?.avatar_url,
-        }
-      });
+        expiresIn: expires_in,
+        user: userDetails
+      })
     } else {
-      res.cookie('access_token', access_token, cookieOptions);
+      res.cookie('access_token', access_token, cookieOptions)
       res.cookie('refresh_token', newRefreshToken, {
         ...cookieOptions,
-        maxAge: 60 * 60 * 24 * 30 * 1000, // 30 days
-      });
-      
+        maxAge: REFRESH_TOKEN_MAX_AGE * 1000
+      })
+
       res.status(200).json({
         message: 'Token refreshed successfully',
         accessToken: access_token,
         refreshToken: newRefreshToken,
-        expiresIn: expires_in, // in seconds
-        user: userDetails || {
-          id: user.id,
-          email: user.email,
-          username: user.user_metadata?.username,
-          fullname: user.user_metadata?.fullname,
-          avatar_url: user.user_metadata?.avatar_url,
-        }
-      });
+        expiresIn: expires_in,
+        user: userDetails
+      })
     }
   } catch (err) {
-    console.error('Refresh token error:', err);
-    res.status(500).json({ 
+    console.error('Refresh token error:', err)
+    res.status(500).json({
       message: 'Failed to refresh token',
       error: 'SERVER_ERROR'
-    });
+    })
   }
-};
-
+}
 // logout route
 export const logout = async (req: Request, res: Response): Promise<void> => {
   const isMobileApp = req.headers['x-client-type'] === 'Mobile';
@@ -549,9 +533,10 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
       res.cookie('access_token', access_token, cookieOptions);
       if (refresh_token) {
         res.cookie('refresh_token', refresh_token, {
-          ...cookieOptions,
-          maxAge: 60 * 60 * 24 * 30 * 1000,
-        });
+  ...cookieOptions,
+  maxAge: REFRESH_TOKEN_MAX_AGE * 1000
+})
+
       }
       res.status(200).json({
         message: 'OAuth login successful',

@@ -209,6 +209,19 @@ export const joinServer = async (req: AuthenticatedRequest, res: Response): Prom
         }
         const requestingUserId = userData.id;
 
+        // Check if user is banned from this server
+        const { data: banData } = await supabase
+            .from('server_bans')
+            .select('*')
+            .eq('server_id', serverId)
+            .eq('user_id', requestingUserId)
+            .single();
+
+        if (banData) {
+            res.status(403).json({ error: 'You are banned from this server' });
+            return;
+        }
+
         const { data: newMember, error: rpcError } = await supabase.rpc('join_server_and_assign_member_role', {
             p_server_id: serverId,
             p_user_id: requestingUserId,
@@ -398,6 +411,23 @@ if (ban) {
         success: false,
         code: "ALREADY_MEMBER",
         message: "You are already a member of this server."
+      });
+      return;
+    }
+
+    // Check if user is banned from this server
+    const { data: banData } = await supabase
+      .from('server_bans')
+      .select('*')
+      .eq('server_id', invite.server_id)
+      .eq('user_id', userId)
+      .single();
+
+    if (banData) {
+      res.status(200).json({
+        success: false,
+        code: "USER_BANNED",
+        message: "You are banned from this server."
       });
       return;
     }
@@ -816,6 +846,7 @@ export const kickMember = async (req: AuthenticatedRequest, res: Response): Prom
 export const banMember = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const { serverId, userId: targetUserId } = req.params;
+    const { reason } = req.body;
     const userId = req.user?.sub;
 
     if (!userId) {
@@ -863,8 +894,37 @@ export const banMember = async (req: AuthenticatedRequest, res: Response): Promi
       return;
     }
 
-    // Remove member and add to banned list - COMPLETE CLEANUP
-    // remove from user_roles (child table) - this is critical for preventing re-add issues
+    // Check if user is already banned
+    const { data: existingBan } = await supabase
+      .from('server_bans')
+      .select('*')
+      .eq('server_id', serverId)
+      .eq('user_id', targetUserId)
+      .single();
+
+    if (existingBan) {
+      res.status(400).json({ error: 'User is already banned from this server' });
+      return;
+    }
+
+    // Add to banned users table
+    const { error: banError } = await supabase
+      .from('server_bans')
+      .insert({
+        server_id: serverId,
+        user_id: targetUserId,
+        banned_by: userId,
+        banned_at: new Date().toISOString(),
+        reason: reason || null
+      });
+
+    if (banError) {
+      console.error('Error adding to ban list:', banError);
+      res.status(500).json({ error: 'Failed to ban member' });
+      return;
+    }
+
+    // Remove from user_roles (child table)
     const { error: banRoleError } = await supabase
       .from('user_roles')
       .delete()
@@ -874,7 +934,7 @@ export const banMember = async (req: AuthenticatedRequest, res: Response): Promi
       console.error('Error removing user roles during ban:', banRoleError);
     }
 
-    //remove from server_members (parent table)
+    // Remove from server_members (parent table)
     const { error: deleteError } = await supabase
       .from('server_members')
       .delete()
@@ -882,12 +942,10 @@ export const banMember = async (req: AuthenticatedRequest, res: Response): Promi
       .eq('user_id', targetUserId);
 
     if (deleteError) {
-      res.status(500).json({ error: 'Failed to ban member' });
-      return;
+      console.error('Error removing from server_members:', deleteError);
+      // Don't fail the request if they're not a member
     }
 
-    // Add to banned users (you might need to create this table)
-    // For now, just remove from server
     res.status(200).json({ message: 'Member banned successfully' });
 
   } catch (error) {
@@ -1411,6 +1469,19 @@ export const addUserToServer = async (req: AuthenticatedRequest, res: Response):
       return;
     }
 
+    // Check if user is banned from this server
+    const { data: banData } = await supabase
+      .from('server_bans')
+      .select('*')
+      .eq('server_id', serverId)
+      .eq('user_id', userData.id)
+      .single();
+
+    if (banData) {
+      res.status(403).json({ error: 'This user is banned from the server and cannot be added' });
+      return;
+    }
+
     // SAFETY CHECK: Clean up any orphaned user_roles before adding
     // prevents duplicate key errors from incomplete previous removals
     const { error: cleanupError } = await supabase
@@ -1531,6 +1602,151 @@ export const transferOwnership = async (req: AuthenticatedRequest, res: Response
 
   } catch (error) {
     console.error('Error transferring ownership:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+// Get list of banned users for a server
+export const getBannedUsers = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const { serverId } = req.params;
+    const userId = req.user?.sub;
+
+    if (!userId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    // Check if user has permission to view banned users (owner or admin)
+    const { data: serverData, error: serverError } = await supabase
+      .from('servers')
+      .select('owner_id')
+      .eq('id', serverId)
+      .single();
+
+    if (serverError || !serverData) {
+      res.status(404).json({ error: 'Server not found' });
+      return;
+    }
+
+    // Check if user is owner or admin
+    const { isOwner, isAdmin } = await checkOwnerOrAdmin(userId, serverId);
+    
+    if (!isOwner && !isAdmin) {
+      res.status(403).json({ error: 'Only server owners and admins can view banned users' });
+      return;
+    }
+
+    // Get banned users list
+    const { data: bannedUsers, error: banError } = await supabase
+      .from('server_bans')
+      .select('user_id, banned_by, banned_at, reason, server_id')
+      .eq('server_id', serverId);
+
+    if (banError) {
+      console.error('Error fetching banned users:', banError);
+      res.status(500).json({ error: 'Failed to fetch banned users' });
+      return;
+    }
+
+    // Fetch user details for each banned user
+    const bannedUsersWithDetails = await Promise.all(
+      (bannedUsers || []).map(async (ban) => {
+        // Get banned user details
+        const { data: userData } = await supabase
+          .from('users')
+          .select('id, username, fullname, avatar_url')
+          .eq('id', ban.user_id)
+          .single();
+
+        // Get banner user details
+        const { data: bannerData } = await supabase
+          .from('users')
+          .select('id, username, fullname, avatar_url')
+          .eq('id', ban.banned_by)
+          .single();
+
+        return {
+          server_id: ban.server_id,
+          user_id: ban.user_id,
+          banned_by: ban.banned_by,
+          banned_at: ban.banned_at,
+          reason: ban.reason,
+          users: userData || null,
+          banned_by_user: bannerData || null
+        };
+      })
+    );
+
+    res.status(200).json(bannedUsersWithDetails);
+
+  } catch (error) {
+    console.error('Error getting banned users:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+// Unban a user from server
+export const unbanUser = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const { serverId, userId: targetUserId } = req.params;
+    const userId = req.user?.sub;
+
+    if (!userId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
+    // Check if user has unban permissions
+    const { data: serverData, error: serverError } = await supabase
+      .from('servers')
+      .select('owner_id')
+      .eq('id', serverId)
+      .single();
+
+    if (serverError || !serverData) {
+      res.status(404).json({ error: 'Server not found' });
+      return;
+    }
+
+    // Check if user is owner or admin
+    const { isOwner, isAdmin } = await checkOwnerOrAdmin(userId, serverId);
+    
+    if (!isOwner && !isAdmin) {
+      res.status(403).json({ error: 'Only server owners and admins can unban users' });
+      return;
+    }
+
+    // Check if user is actually banned
+    const { data: banData } = await supabase
+      .from('server_bans')
+      .select('*')
+      .eq('server_id', serverId)
+      .eq('user_id', targetUserId)
+      .single();
+
+    if (!banData) {
+      res.status(404).json({ error: 'User is not banned from this server' });
+      return;
+    }
+
+    // Remove from banned users table
+    const { error: unbanError } = await supabase
+      .from('server_bans')
+      .delete()
+      .eq('server_id', serverId)
+      .eq('user_id', targetUserId);
+
+    if (unbanError) {
+      console.error('Error unbanning user:', unbanError);
+      res.status(500).json({ error: 'Failed to unban user' });
+      return;
+    }
+
+    res.status(200).json({ message: 'User unbanned successfully' });
+
+  } catch (error) {
+    console.error('Error unbanning user:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
