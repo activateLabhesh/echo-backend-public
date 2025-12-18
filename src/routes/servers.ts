@@ -27,6 +27,8 @@ import {
   searchUsersByUsername,
   addUserToServer,
   getBannedUsers,
+  getRoleMembers,
+  getServerRoles,
   unbanUser
 } from '../controllers/serverController';
 import { busboyMiddleware } from '../middleware/busboyMiddleware';
@@ -56,7 +58,8 @@ router.delete('/:serverId/members/:userId/unban', authenticate, unbanUser);
 router.get('/:serverId/bans', authenticate, getBannedUsers);
 router.post('/:serverId/leave', authenticate, leaveServer);
 router.post('/:serverId/transfer-ownership', authenticate, transferOwnership);
-
+router.get('/:serverId/roles/:roleName/members', authenticate, getRoleMembers);
+router.get('/:serverId/roles', authenticate, getServerRoles);
 // Invite management routes
 router.get('/:serverId/invites', authenticate, getServerInvites);
 router.post('/:serverId/invites', authenticate, createServerInvite);
