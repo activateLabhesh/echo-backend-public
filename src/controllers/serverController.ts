@@ -1967,3 +1967,56 @@ export const getServerMembersWithVoicePresence = async (req: AuthenticatedReques
     res.status(500).json({ error: 'Internal server error' });
   }
 };
+
+export const getRoleMembers = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  const { serverId, roleName } = req.params;
+  // 1. Find the role ID for this server and roleName
+  const { data: role, error: roleError } = await supabase
+    .from('roles')
+    .select('id')
+    .eq('server_id', serverId)
+    .eq('name', roleName.trim())
+    .single();
+
+  if (roleError || !role) {
+    res.status(404).json({ error: 'Role not found' });
+    return;
+  }
+
+  // 2. Find all users with this role
+  const { data: userRoles, error: userRolesError } = await supabase
+    .from('user_roles')
+    .select('user_id, users!user_id (username, avatar_url)')
+    .eq('role_id', role.id);
+
+  if (userRolesError) {
+    res.status(500).json({ error: 'Failed to fetch users for role' });
+    return;
+  }
+
+  // 3. Format response (robust for array/object)
+  const users = (userRoles || []).map(ur => {
+    const userObj = Array.isArray(ur.users) ? ur.users[0] : ur.users;
+    return {
+      id: ur.user_id,
+      username: userObj?.username || 'Unknown',
+      avatarUrl: userObj?.avatar_url || '/User_profil.png',
+    };
+  });
+
+  res.json({ users });
+  // No return statement here!
+};
+
+export const getServerRoles = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  const { serverId } = req.params;
+  const { data: roles, error } = await supabase
+    .from('roles')
+    .select('id, name, color')
+    .eq('server_id', serverId);
+  if (error){
+    res.status(500).json({ error: 'Failed to fetch roles' });
+    return;
+  } 
+  res.json({ roles });
+};
