@@ -242,6 +242,7 @@ export const markMentionAsRead = async (req: AuthenticatedRequest, res: Response
       return;
     }
 
+    // Mark as read
     const { error } = await supabase
       .from('mention_notifications')
       .update({ is_read: true })
@@ -251,6 +252,16 @@ export const markMentionAsRead = async (req: AuthenticatedRequest, res: Response
     if (error) {
       console.error('Error marking as read:', error);
       throw error;
+    }
+
+    // Delete after marking as read
+    const { error: deleteError } = await supabase
+      .from('mention_notifications')
+      .delete()
+      .eq('id', mentionId)
+      .eq('user_id', userId);
+    if (deleteError) {
+      console.error('Error deleting notification:', deleteError);
     }
 
     // console.log('Mention marked as read successfully');
@@ -283,6 +294,16 @@ export const markAllMentionsAsRead = async (req: AuthenticatedRequest, res: Resp
     if (error) {
       console.error('Error marking all as read:', error);
       throw error;
+    }
+
+    // Delete all read notifications for this user
+    const { error: deleteAllError } = await supabase
+      .from('mention_notifications')
+      .delete()
+      .eq('user_id', userId)
+      .eq('is_read', true);
+    if (deleteAllError) {
+      console.error('Error deleting all read notifications:', deleteAllError);
     }
 
     const updatedCount = data?.length || 0;
