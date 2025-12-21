@@ -203,8 +203,24 @@ export const dmMessagePostController = async (req: AuthenticatedRequest, res: Re
             return res.status(500).json({ error: 'Server error while saving message' });
         }
 
-        // 5. Broadcast via Sockets
+        // Fetch the full message with reply_to_message join for socket emit
+        const { data: fullMessage, error: joinError } = await supabase
+          .from('messages')
+          .select(`
+            *,
+            reply_to_message:reply_to (
+              id, content, sender_id, users (username, avatar_url)
+            )
+          `)
+          .eq('id', savedMessage.id)
+          .single();
+        if (joinError) {
+          console.error('Error fetching joined message for socket:', joinError);
+        }
         const io = getIO();
+        io.to(savedMessage.channel_id).emit("new_message", fullMessage || savedMessage);
+
+        // 5. Broadcast via Sockets
         const receiverSocketId = userSocketMap.get(receiver_id);
         if (receiverSocketId) {
             io.to(receiverSocketId).emit("receive_dm", savedMessage);
@@ -228,6 +244,7 @@ export const channelmessagePostController = async (req:AuthenticatedRequest, res
         const sender_id = req.user?.sub || body.sender_id;
         const channel_id = body.channel_id as string;
         const content = body?.content ?? "";
+        const reply_to = body.reply_to || null;
         
         const anyReqCh = req as any;
         let uploadedFile = anyReqCh.file as Express.Multer.File | undefined;
@@ -298,7 +315,8 @@ export const channelmessagePostController = async (req:AuthenticatedRequest, res
             channel_id,
             sender_id,
             content,
-            media_url
+            media_url,
+            reply_to // <-- ensure reply_to is stored
         })
         .select()
         .single();
@@ -328,10 +346,24 @@ export const channelmessagePostController = async (req:AuthenticatedRequest, res
             }
         }
 
+        // Fetch the full message with reply_to_message join for socket emit
+        const { data: fullMessage, error: joinError } = await supabase
+          .from('messages')
+          .select(`
+            *,
+            reply_to_message:reply_to (
+              id, content, sender_id, users (username, avatar_url)
+            )
+          `)
+          .eq('id', id)
+          .single();
+        if (joinError) {
+          console.error('Error fetching joined message for socket:', joinError);
+        }
         const io = getIO();
-        io.to(channel_id).emit("new_message", savedMessage);
+        io.to(channel_id).emit("new_message", fullMessage || savedMessage);
         
-        return res.status(200).json(savedMessage);
+        return res.status(200).json(fullMessage || savedMessage);
 
     } catch(error:any) {
         console.error(error);
@@ -360,11 +392,16 @@ export const messageGetController = async (req:Request, res:Response):Promise<an
         }
 
         const { data, error } = await supabase
-            .from('messages')
-            .select('*')
-            .eq('channel_id', channel_id)
-            .order('timestamp', { ascending: false })
-            .range(offset, offset + pageSize - 1); // Apply pagination here
+          .from('messages')
+          .select(`
+            *,
+            reply_to_message:reply_to (
+              id, content, sender_id, users (username, avatar_url)
+            )
+          `)
+          .eq('channel_id', channel_id)
+          .order('timestamp', { ascending: false })
+          .range(offset, offset + pageSize - 1); // Apply pagination here
 
         if(error){
             console.error('Error fetching messages:', error);
@@ -376,18 +413,19 @@ export const messageGetController = async (req:Request, res:Response):Promise<an
         if(senderIds.length > 0){
             const { data: usersData, error: usersError } = await supabase
                 .from('users')
-                .select('id, username')
+                .select('id, username, avatar_url') // <-- fetch avatar_url for sender
                 .in('id', senderIds);
             if(usersError){
                 console.error('Error fetching user names:', usersError);
             } else if(usersData) {
-                usersMap = new Map(usersData.map((user:any) => [user.id, user.username]));
+                usersMap = new Map(usersData.map((user:any) => [user.id, { username: user.username, avatar_url: user.avatar_url }]));
             }
         }
 
         const messagesWithUsernames = data ? data.map((msg:any) => ({
             ...msg,
-            username: usersMap.get(msg.sender_id) || null
+            username: usersMap.get(msg.sender_id)?.username || null,
+            sender_avatar_url: usersMap.get(msg.sender_id)?.avatar_url || null
         })) : [];
 
         const totalCount = count || 0;
