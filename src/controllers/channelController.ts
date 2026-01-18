@@ -205,11 +205,24 @@ export const getChannelsWithAccess = async (req: AuthenticatedRequest, res: Resp
       }
     }
 
-    // Get all channels
+    // Get all channels with category information
     const { data: channels, error: channelsError } = await supabase
       .from('channels')
-      .select('id, name, type, is_private')
-      .eq('server_id', server_id);
+      .select(`
+        id, 
+        name, 
+        type, 
+        is_private, 
+        category_id, 
+        position,
+        channel_categories (
+          id,
+          name,
+          position
+        )
+      `)
+      .eq('server_id', server_id)
+      .order('position', { ascending: true });
 
     if (channelsError) {
       throw new Error(`Database error: ${channelsError.message}`);
@@ -265,7 +278,7 @@ export const getChannelsWithAccess = async (req: AuthenticatedRequest, res: Resp
 };
 
 export const createChannel = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
-  const { name, type, is_private } = req.body;
+  const { name, type, is_private, category_id, position } = req.body;
   const { server_id } = req.params;
   const userId = req.user?.sub;
 
@@ -291,6 +304,36 @@ export const createChannel = async (req: AuthenticatedRequest, res: Response): P
       return;
     }
 
+    // Determine category_id: use provided one or find default based on channel type
+    let finalCategoryId = category_id;
+    if (!finalCategoryId) {
+      const defaultCategoryName = type === 'voice' ? 'Voice Channels' : 'Text Channels';
+      const { data: defaultCategory } = await supabase
+        .from('channel_categories')
+        .select('id')
+        .eq('server_id', server_id)
+        .eq('name', defaultCategoryName)
+        .maybeSingle();
+      
+      finalCategoryId = defaultCategory?.id || null;
+    }
+
+    // Determine position: use provided one or get next available position in category
+    let finalPosition = position;
+    if (finalPosition === undefined) {
+      const { data: existingChannels } = await supabase
+        .from('channels')
+        .select('position')
+        .eq('server_id', server_id)
+        .eq('category_id', finalCategoryId)
+        .order('position', { ascending: false })
+        .limit(1);
+
+      finalPosition = existingChannels && existingChannels.length > 0
+        ? existingChannels[0].position + 1
+        : 0;
+    }
+
     const { data: newChannel, error: rpcError } = await supabase.rpc('create_channel_and_add_member', {
       p_server_id: server_id,
       p_user_id: userId, 
@@ -302,6 +345,26 @@ export const createChannel = async (req: AuthenticatedRequest, res: Response): P
     if (rpcError) {
       console.error('RPC `create_channel_and_add_member` error:', rpcError);
       res.status(403).json({ message: 'Error creating channel', details: rpcError.message });
+      return;
+    }
+
+    // Update the channel with category_id and position
+    if (newChannel?.[0]?.id) {
+      const { data: updatedChannel, error: updateError } = await supabase
+        .from('channels')
+        .update({ 
+          category_id: finalCategoryId,
+          position: finalPosition 
+        })
+        .eq('id', newChannel[0].id)
+        .select('id, name, type, is_private, category_id, position')
+        .single();
+
+      if (updateError) {
+        console.error('Error updating channel with category:', updateError);
+      }
+
+      res.status(201).json(updatedChannel || newChannel[0]);
       return;
     }
 

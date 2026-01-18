@@ -236,16 +236,51 @@ class RetryManager {
 }
 
 export function setupVoiceSocket() {
-  // NOTE: channelUsers, voiceStates, and MediaState are now at module level for export
-  
-  // Connection state tracking
-  const connectionStates = new Map<string, ConnectionState>();
-
   const io = getIO();
 
   if (io) {
     console.log("Voice Socket.IO instance set successfully.");
+    io.on('connection', (socket) => {
+      // Allow any user to request the current roster of a voice channel (Discord-like visibility)
+      socket.on('get_voice_channel_roster', (channelId: string, callback?: (data: { channelId: string, members: any[] }) => void) => {
+        try {
+          const usersInChannel = channelUsers.get(channelId) || [];
+          const roster = usersInChannel.map(existingSocketId => {
+            const state = voiceStates.get(existingSocketId);
+            return {
+              socketId: existingSocketId,
+              userId: state?.userId,
+              muted: state?.muted,
+              speaking: state?.speaking,
+              video: state?.video,
+              screenSharing: state?.screenSharing,
+              mediaQuality: state?.mediaQuality,
+              activeStreams: state?.activeStreams,
+              deviceInfo: state?.deviceInfo,
+              isRecording: state?.recordingState?.isRecording || false
+            };
+          });
+          if (typeof callback === 'function') {
+            callback({ channelId, members: roster });
+          } else {
+            socket.emit('voice_channel_roster', { channelId, members: roster });
+          }
+        } catch (error) {
+          // Optionally emit an error event
+          socket.emit('voice_error', {
+            code: 'ROSTER_FETCH_FAILED',
+            message: `Failed to fetch channel roster: ${error}`,
+            channelId
+          });
+        }
+      });
+      // ...existing code...
+      // (rest of the connection handler remains unchanged)
+    });
   }
+  // NOTE: channelUsers, voiceStates, and MediaState are now at module level for export
+  // Connection state tracking
+  const connectionStates = new Map<string, ConnectionState>();
 
   // Helper function to get userId from socketId using the shared map
   const getUserIdFromSocketId = (socketId: string): string | null => {
@@ -364,23 +399,26 @@ export function setupVoiceSocket() {
         }); 
 
         // Send the enhanced 'roster' (list of existing members) to the new user
-        const roster = usersInChannel.map(existingSocketId => {
-          const state = voiceStates.get(existingSocketId);
-          return {
-            socketId: existingSocketId,
-            userId: state?.userId,
-            muted: state?.muted,
-            speaking: state?.speaking,
-            video: state?.video,
-            screenSharing: state?.screenSharing,
-            mediaQuality: state?.mediaQuality,
-            activeStreams: state?.activeStreams,
-            deviceInfo: state?.deviceInfo,
-            isRecording: state?.recordingState?.isRecording || false
-          };
-        });
-        
-        socket.emit('voice_roster', { channelId, members: roster });
+        // Only send the roster if the user is now in the channel
+        const updatedUsersInChannel = channelUsers.get(channelId) || [];
+        if (updatedUsersInChannel.includes(socket.id)) {
+          const roster = updatedUsersInChannel.map(existingSocketId => {
+            const state = voiceStates.get(existingSocketId);
+            return {
+              socketId: existingSocketId,
+              userId: state?.userId,
+              muted: state?.muted,
+              speaking: state?.speaking,
+              video: state?.video,
+              screenSharing: state?.screenSharing,
+              mediaQuality: state?.mediaQuality,
+              activeStreams: state?.activeStreams,
+              deviceInfo: state?.deviceInfo,
+              isRecording: state?.recordingState?.isRecording || false
+            };
+          });
+          socket.emit('voice_roster', { channelId, members: roster });
+        }
         
       } catch (error) {
         const voiceError = VoiceErrorHandler.createError(

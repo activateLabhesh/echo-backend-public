@@ -1,28 +1,31 @@
 import { Request, Response } from 'express';
 import {supabase,supabaseAdmin} from '../client/supabase'
-import jwt from 'jsonwebtoken';
 
-const ACCESS_TOKEN_MAX_AGE = 60 * 60
-const REFRESH_TOKEN_MAX_AGE = 60 * 60 * 24 * 30
+// Access token expires in 1 hour (matches Supabase JWT expiration)
+const ACCESS_TOKEN_MAX_AGE = 60 * 60; // 1 hour in seconds
+// Refresh token expires in 30 days
+const REFRESH_TOKEN_MAX_AGE = 60 * 60 * 24 * 30; // 30 days in seconds
+
+// Frontend URL for redirects (configurable via env)
+const FRONTEND_URL = process.env.FRONTEND_URL?.split(',')[0]?.trim() || 'https://echo.ieeecsvit.com';
 
 const cookieOptions = {
   httpOnly: true,
   secure: true,
   sameSite: 'none' as const,
   path: '/',
-  maxAge: ACCESS_TOKEN_MAX_AGE * 1000
-}
+  maxAge: ACCESS_TOKEN_MAX_AGE,
+};
+
 
 //test route
 export const testRoute = (_req: Request, res: Response) => {
-  console.log("Test route hit");
   res.status(200).json({ message: 'Test route is working!' });
 };
 
 //register route
 export const register = async (req: Request, res: Response): Promise <void> => {
   const { email, password ,username, fullname, date_of_birth} = req.body;
-  console.log('Registering user:', { email, password ,username,fullname,date_of_birth});
 
   const { data: existingEmail } = await supabaseAdmin
   .from('users')
@@ -31,7 +34,8 @@ export const register = async (req: Request, res: Response): Promise <void> => {
   .maybeSingle();
 
   if (existingEmail) {
-  res.status(409).json({ message: 'User already registered' });
+    //409 error is for conflicting request
+  res.status(409).json({ message: 'Conflict in data: User already registered' });
   return
   }
 
@@ -42,7 +46,7 @@ export const register = async (req: Request, res: Response): Promise <void> => {
   .maybeSingle();
 
   if (existingUsername) {
-  res.status(409).json({ message: 'Username already taken' });
+  res.status(409).json({ message: 'Conflict in data: Username already taken' });
   return
   }
 
@@ -50,12 +54,12 @@ export const register = async (req: Request, res: Response): Promise <void> => {
     email,
     password,
     options: {
-      emailRedirectTo: `${process.env.FRONTEND_URL || 'https://echo.ieeecsvit.com'}/auth/callback`,
+      emailRedirectTo: `${FRONTEND_URL}/auth/callback?next=/login`,
     },
   });
 
   if (error || !signUpData?.user?.id) {
-    res.status(400).json({ message: error?.message });
+    res.status(400).json({ message: `$Bad Request Message: ${error?.message}` });
     return
   }
   const userId = signUpData.user.id;
@@ -71,13 +75,13 @@ export const register = async (req: Request, res: Response): Promise <void> => {
       date_of_birth,
       avatar_url: null,
       status: 'offline',
-      bio:'',
+      bio:'', //present in supabase
     },
   ]);
 
   if (insertError) {
     console.error('Insert error:', insertError.message);
-    res.status(500).json({ message: 'Insert Error. Check console ' });
+    res.status(500).json({ message: `Insert Error. ${insertError.message}` });
     return
   }
 
@@ -87,11 +91,10 @@ export const register = async (req: Request, res: Response): Promise <void> => {
 // login route
 export const login = async (req: Request, res: Response):Promise <void> => {
   const { identifier, password } = req.body;
-  const isMobileApp = req.headers['x-client-type'] === 'Mobile';
+  const isMobileApp = req.headers['x-client-type'] === 'Mobile'; //checks where the request is from
 
-  let email = identifier;
-  
-  // Check if identifier is not email, then it is username
+  let email =identifier;
+  //check if identifier is not email, then it is username. search database for that username and extract email from it
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier)) {
     const { data, error } = await supabaseAdmin
       .from('users')
@@ -113,129 +116,105 @@ export const login = async (req: Request, res: Response):Promise <void> => {
   });
 
   if (error || !data.session) {
-    res.status(401).json({ message: error?.message || 'Login failed' });
+    res.status(401).json({ message: error?.message || 'Unauthorized: Login failed' });
     return
   }
 
-  const { access_token, refresh_token, user, expires_in } = data.session;
+  const { access_token, refresh_token, user } = data.session;
 
   const { data: userDetails, error: fetchError } = await supabaseAdmin
-    .from('users')
-    .select('id, email, username, fullname, avatar_url, bio, date_of_birth, status, created_at')
-    .eq('id', user.id)
-    .maybeSingle();
+  .from('users')
+  .select('id, email, username, fullname, avatar_url, bio, date_of_birth, status,created_at')
+  .eq('id', user.id)
+  .maybeSingle();
 
-  if (fetchError || !userDetails) {
-    res.status(500).json({ message: 'Failed to fetch user profile details' });
-    return;
-  }
+if (fetchError || !userDetails) {
+  res.status(500).json({ message: 'Failed to fetch user profile details' });
+  return;
+}
 
-  if (isMobileApp) {
+  if(isMobileApp){
     res.status(200).json({
-      message: "Logged in successfully",
+      message : "Logged In",
       user: userDetails,
-      accessToken: access_token,
-      refreshToken: refresh_token,
-      expiresIn: expires_in, // in seconds
+      accessToken:access_token,
+      refreshToken:refresh_token,
+      expiresIn: data.session.expires_in,
+    })
+  } else{
+    res.cookie('access_token', access_token, cookieOptions);
+    res.cookie('refresh_token', refresh_token, {
+      ...cookieOptions,
+      maxAge: REFRESH_TOKEN_MAX_AGE,
     });
-  } else {
-res.cookie('access_token', access_token, cookieOptions)
-res.cookie('refresh_token', refresh_token, {
-  ...cookieOptions,
-  maxAge: REFRESH_TOKEN_MAX_AGE * 1000
-})
-
-    
-    console.log("User logged in successfully");
     res.status(200).json({ 
-      message: 'Logged in successfully', 
+      message: 'Logged in', 
       user: userDetails,
       accessToken: access_token,
       refreshToken: refresh_token,
-      expiresIn: expires_in // in seconds
+      expiresIn: data.session.expires_in
     });
   }
 };
 
-// refresh tokens
-export const refreshToken = async (req: Request, res: Response): Promise<void> => {
-  const isMobileApp = req.headers['x-client-type'] === 'Mobile'
+//refresh tokens
+export const refreshToken = async (req: Request, res: Response): Promise <void> => {
+  const isMobileApp = req.headers['x-client-type'] === 'Mobile';
 
-  let refresh_token: string | undefined
+  let refresh_token: string | undefined;
 
-  if (isMobileApp) {
-    refresh_token = req.body.refreshToken || req.body.refresh_token
-  } else {
-    refresh_token = req.cookies.refresh_token
-  }
+  // Support hybrid approach: try body first (both snake_case and camelCase), then cookies
+  // This allows both mobile and web clients to send refresh token in body as fallback
+  // Safely access req.body properties in case body is undefined
+  refresh_token = req.body?.refresh_token || 
+                  req.body?.refreshToken || 
+                  req.cookies?.refresh_token;
 
   if (!refresh_token) {
-    res.status(401).json({
-      message: 'Refresh token missing',
-      error: 'NO_REFRESH_TOKEN'
-    })
+    res.status(401).json({ message: 'Refresh token missing' });
     return
   }
 
-  try {
-    const { data, error } = await supabase.auth.refreshSession({ refresh_token })
+  const { data, error } = await supabase.auth.refreshSession({ refresh_token });
 
-    if (error || !data.session) {
-      res.status(401).json({
-        message: 'Invalid or expired refresh token',
-        error: 'INVALID_REFRESH_TOKEN'
-      })
-      return
-    }
-
-    const { access_token, refresh_token: newRefreshToken, user, expires_in } = data.session
-
-    const { data: userDetails } = await supabaseAdmin
-      .from('users')
-      .select('id, email, username, fullname, avatar_url, bio, date_of_birth, status, created_at')
-      .eq('id', user.id)
-      .maybeSingle()
-
-    if (isMobileApp) {
-      res.status(200).json({
-        message: 'Token refreshed successfully',
-        accessToken: access_token,
-        refreshToken: newRefreshToken,
-        expiresIn: expires_in,
-        user: userDetails
-      })
-    } else {
-      res.cookie('access_token', access_token, cookieOptions)
-      res.cookie('refresh_token', newRefreshToken, {
-        ...cookieOptions,
-        maxAge: REFRESH_TOKEN_MAX_AGE * 1000
-      })
-
-      res.status(200).json({
-        message: 'Token refreshed successfully',
-        accessToken: access_token,
-        refreshToken: newRefreshToken,
-        expiresIn: expires_in,
-        user: userDetails
-      })
-    }
-  } catch (err) {
-    console.error('Refresh token error:', err)
-    res.status(500).json({
-      message: 'Failed to refresh token',
-      error: 'SERVER_ERROR'
-    })
+  if (error || !data.session) {
+    res.status(401).json({ message: 'Invalid refresh token' });
+    return
   }
-}
-// logout route
-export const logout = async (req: Request, res: Response): Promise<void> => {
-  const isMobileApp = req.headers['x-client-type'] === 'Mobile';
+
+  const { access_token, refresh_token: newRefreshToken, user } = data.session;
   
   if (isMobileApp) {
+    res.status(200).json({
+      message: 'Token refreshed',
+      accessToken: access_token,
+      refreshToken: newRefreshToken,
+      user: user,
+      expiresIn: data.session.expires_in  
+    });
+  } else {
+    res.cookie('access_token', access_token, cookieOptions);
+    res.cookie('refresh_token', newRefreshToken, {
+      ...cookieOptions,
+      maxAge: REFRESH_TOKEN_MAX_AGE,
+    });
+    res.status(200).json({ 
+      message: 'Token refreshed',
+      accessToken: access_token,
+      refreshToken: newRefreshToken,
+      expiresIn: data.session.expires_in
+    });
+  }
+};
+
+//logout route
+export const logout = async (req: Request, res: Response): Promise<void> => {
+  // Standardize mobile header check (lowercase header name)
+  const isMobileApp = req.headers['x-client-type'] === 'Mobile';
+  if(isMobileApp){
     res.status(200).json({ message: 'Logged out successfully' });
     return;
   }
-  
   const accessToken = req.cookies.access_token;
 
   if (!accessToken) {
@@ -252,7 +231,7 @@ export const logout = async (req: Request, res: Response): Promise<void> => {
   }
 };
 
-// send reset password link
+//send reset password link
 export const sendResetPasswordEmail = async (req: Request, res: Response):Promise<void> => {
   const { email } = req.body;
 
@@ -262,7 +241,7 @@ export const sendResetPasswordEmail = async (req: Request, res: Response):Promis
   }
 
   const { error } = await supabase.auth.resetPasswordForEmail(email, {
-    redirectTo: `https://echo.ieeecsvit.com/reset-password`, 
+    redirectTo: `${FRONTEND_URL}/reset-password`, 
   });
 
   if (error) {
@@ -274,7 +253,7 @@ export const sendResetPasswordEmail = async (req: Request, res: Response):Promis
   return
 };
 
-// update password using reset session
+//update password using reset session
 export const updatePassword = async (req: Request, res: Response):Promise<void> => {
   const authHeader = req.headers['authorization'];
   const access_token = authHeader?.split(' ')[1];
@@ -285,7 +264,7 @@ export const updatePassword = async (req: Request, res: Response):Promise<void> 
     return
   }
 
-  // extract user id from the token
+  //extract user id from the token
   let userId: string;
   try {
     const { data: userData, error } = await supabase.auth.getUser(access_token);
@@ -299,7 +278,7 @@ export const updatePassword = async (req: Request, res: Response):Promise<void> 
     return;
   }
 
-  // update password using admin 
+  //update password using admin 
   const { data, error } = await supabaseAdmin.auth.admin.updateUserById(userId, {
     password: new_password,
   });
@@ -315,6 +294,7 @@ export const updatePassword = async (req: Request, res: Response):Promise<void> 
 
 // change password for logged-in users
 export const changePassword = async (req: Request, res: Response): Promise<void> => {
+
   const authHeader = req.headers['authorization'];
   const headerToken = authHeader?.startsWith('Bearer ') ? authHeader.split(' ')[1] : undefined;
   const cookieToken = req.cookies?.access_token;
@@ -327,12 +307,15 @@ export const changePassword = async (req: Request, res: Response): Promise<void>
     return;
   }
 
-  // decode token to get user id (sub)
-  let userId: string | undefined;
+  // Validate token with Supabase and extract user id
+  let userId: string;
   try {
-    const decoded: any = jwt.decode(access_token);
-    userId = decoded?.sub;
-    if (!userId) throw new Error('sub missing');
+    const { data: userData, error } = await supabase.auth.getUser(access_token);
+    if (error || !userData?.user) {
+      res.status(401).json({ message: 'Invalid or expired access token' });
+      return;
+    }
+    userId = userData.user.id;
   } catch (err) {
     res.status(401).json({ message: 'Invalid access token' });
     return;
@@ -385,15 +368,18 @@ export const authorize = async (req: Request, res: Response): Promise<void> => {
 
   } catch (err: any) {
     console.error('Error in authorize route:', err.message || err);
+    // Catch any unexpected errors during token processing
     res.status(500).json({ message: 'Internal server error during authorization.' });
   }
 };
 
-// handle OAuth user (Google, etc.)
+//handle OAuth user (Google, etc.)
 export const handleOAuthUser = async (req: Request, res: Response): Promise<void> => {
   const isMobileApp = req.headers['x-client-type'] === 'Mobile';
   const authHeader = req.headers.authorization;
   const access_token = authHeader?.split(' ')[1];
+  // Get refresh token from request body (sent by frontend after Supabase OAuth)
+  const refresh_token = req.body.refresh_token || req.body.refreshToken || '';
 
   if (!access_token) {
     res.status(401).json({ message: 'Access token required' });
@@ -415,17 +401,15 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
     // Check if user exists in our users table by ID
     let { data: existingUser, error: fetchError } = await supabaseAdmin
       .from('users')
-      .select('*')
+      .select('id, email, username, fullname, avatar_url, bio, date_of_birth, status, created_at')
       .eq('id', supabaseUser.id)
       .maybeSingle();
 
-    if (fetchError && fetchError.code !== 'PGRST116') {
-      console.error('Error checking existing user:', fetchError);
-      res.status(500).json({ message: 'Database error' });
-      return;
+    if (fetchError) {
+      console.error('Error fetching user by ID:', fetchError);
     }
 
-    // If not found by ID, check by email
+    // If not found by ID, check by email (user might have registered with email/password before)
     if (!existingUser && supabaseUser.email) {
       const { data: emailUser, error: emailError } = await supabaseAdmin
         .from('users')
@@ -438,7 +422,8 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
       }
 
       if (emailUser) {
-        // Update the existing user's ID to match the OAuth ID
+
+        // Update the existing user's ID to match the new Supabase OAuth ID
         const { error: updateError } = await supabaseAdmin
           .from('users')
           .update({ id: supabaseUser.id })
@@ -446,8 +431,10 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
 
         if (updateError) {
           console.error('Error linking OAuth account:', updateError);
+          // If we can't update the ID, just use the existing user data
           existingUser = emailUser;
         } else {
+          // Fetch the updated user
           const { data: updatedUser } = await supabaseAdmin
             .from('users')
             .select('id, email, username, fullname, avatar_url, bio, date_of_birth, status, created_at')
@@ -455,6 +442,7 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
             .maybeSingle();
           
           existingUser = updatedUser || emailUser;
+
         }
       }
     }
@@ -463,6 +451,8 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
 
     // If user doesn't exist, create them
     if (!existingUser) {
+
+
       // Generate username from email or OAuth name
       let username = supabaseUser.user_metadata?.full_name?.replace(/\s+/g, '_').toLowerCase() 
                      || supabaseUser.email?.split('@')[0] 
@@ -475,6 +465,7 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
         .eq('username', username)
         .maybeSingle();
 
+      // If username exists, append random numbers
       if (usernameCheck) {
         username = `${username}_${Math.floor(Math.random() * 9999)}`;
       }
@@ -486,25 +477,32 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
         fullname: supabaseUser.user_metadata?.full_name || '',
         avatar_url: supabaseUser.user_metadata?.avatar_url || null,
         status: 'offline',
-        bio: "Hey, I'm using echo! ",
+        bio: '',
         date_of_birth: null,
       };
 
-      const { data: upsertedUser, error: upsertError } = await supabaseAdmin
+      const { error: insertError } = await supabaseAdmin
         .from('users')
-        .upsert([newUser], { onConflict: 'id' })
-        .select('id, email, username, fullname, avatar_url, bio, date_of_birth, status, created_at')
-        .single();
+        .insert([newUser]);
 
-      if (upsertError) {
-        console.error('Error creating OAuth user:', upsertError);
+      if (insertError) {
+        console.error('Error creating OAuth user:', insertError);
         res.status(500).json({ message: 'Failed to create user record' });
         return;
       }
 
-      userDetails = upsertedUser;
+      // Fetch the newly created user
+      const { data: newUserData } = await supabaseAdmin
+        .from('users')
+        .select('id, email, username, fullname, avatar_url, bio, date_of_birth, status, created_at')
+        .eq('id', supabaseUser.id)
+        .maybeSingle();
+
+      userDetails = newUserData;
+
     } else {
-      // Update avatar if user doesn't have one
+      
+      // Optionally update avatar if user doesn't have one
       if (!existingUser.avatar_url && supabaseUser.user_metadata?.avatar_url) {
         await supabaseAdmin
           .from('users')
@@ -515,10 +513,8 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
       }
     }
 
-    // Get refresh token and expiry from session
-    const { data: sessionData } = await supabase.auth.getSession();
-    const refresh_token = sessionData?.session?.refresh_token || '';
-    const expires_in = sessionData?.session?.expires_in || 3600;
+    // Use refresh token from request body (passed by frontend from Supabase session)
+    // Note: Server-side supabase.auth.getSession() won't have the user's session
 
     if (isMobileApp) {
       res.status(200).json({
@@ -526,24 +522,21 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
         user: userDetails,
         accessToken: access_token,
         refreshToken: refresh_token,
-        expiresIn: expires_in,
         isNewUser: !existingUser,
       });
     } else {
       res.cookie('access_token', access_token, cookieOptions);
       if (refresh_token) {
         res.cookie('refresh_token', refresh_token, {
-  ...cookieOptions,
-  maxAge: REFRESH_TOKEN_MAX_AGE * 1000
-})
-
+          ...cookieOptions,
+          maxAge: REFRESH_TOKEN_MAX_AGE,
+        });
       }
       res.status(200).json({
         message: 'OAuth login successful',
         user: userDetails,
         accessToken: access_token,
         refreshToken: refresh_token,
-        expiresIn: expires_in,
         isNewUser: !existingUser,
       });
     }

@@ -58,7 +58,7 @@ route.put('/:server_id/categories/:category_id', authenticate, updateRoleCategor
 route.delete('/:server_id/categories/:category_id', authenticate, deleteRoleCategory);
 
 // Existing routes (kept for backward compatibility)
-route.get('/:server_id/view', getRoleDetailsWithPermissions);
+route.get('/:server_id/view', authenticate, getRoleDetailsWithPermissions);
 route.post('/:server_id/Add_Role', authenticate, addRole);
 route.post('/:server_id/:role_id/Edit_Role', authenticate, editRole);
 route.post('/:server_id/Assign_Role', authenticate, assignRole);
@@ -66,6 +66,6 @@ route.post('/:server_id/Assign_Role', authenticate, assignRole);
 // Old routes
 route.delete('/:server_id/:role_id', authenticate, deleteRole);
 route.post('/:server_id/Remove_Role', authenticate, removeRoleFromUser);
-route.get('/permissions', getAvailablePermissions);
+route.get('/permissions', authenticate, getAvailablePermissions);
 
 export default route;

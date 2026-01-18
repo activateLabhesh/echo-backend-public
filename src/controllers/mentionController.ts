@@ -6,7 +6,7 @@ export const getMentions = async (req: AuthenticatedRequest, res: Response): Pro
   try {
     // Get user ID from authenticated user or query parameter
     const userId = req.user?.sub || req.query.userId;
-    const { page = 1, limit = 20, unreadOnly = false } = req.query;
+    const { page = 1, limit = 20, unreadOnly = false, channelId } = req.query;
     
     if (!userId) {
       res.status(400).json({ error: 'User ID is required' });
@@ -68,6 +68,11 @@ export const getMentions = async (req: AuthenticatedRequest, res: Response): Pro
 
     if (unreadOnly === 'true') {
       query = query.eq('is_read', false);
+    }
+
+    // Filter by channel if channelId is provided
+    if (channelId) {
+      query = query.eq('messages.channel_id', channelId);
     }
 
     const { data: detailedNotifications, error: detailError } = await query

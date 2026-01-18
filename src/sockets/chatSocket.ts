@@ -22,17 +22,47 @@ export const getIO = (): Server => {
 };
 
 export const setupChatSocket = (io: Server) => {
-  io.on("connection", (socket: Socket) => { 
+  io.on("connection", async (socket: Socket) => { 
     // console.log(`Chat Socket: User connected - ${socket.id}`);
 
-    // The frontend sends the userId via socket.auth 
-    const userId = socket.handshake.auth.userId;
-    if (userId) {
-      userSocketMap.set(userId, socket.id);
-      // console.log(`User ${userId} registered with socket ${socket.id}`);
+    const token = socket.handshake.auth.token;
+    const clientUserId = socket.handshake.auth.userId; // Backward compatibility
+    
+    let userId: string | null = null;
+    
+    // Prefer token verification (new secure method)
+    if (token) {
+      try {
+        const { data, error } = await supabase.auth.getUser(token);
+        if (error || !data?.user?.id) {
+          console.warn(`Invalid token for socket ${socket.id}:`, error?.message);
+          socket.emit("auth_error", { code: "INVALID_TOKEN", message: "Invalid or expired token" });
+          socket.disconnect();
+          return;
+        }
+        userId = data.user.id;
+        // console.log(`Socket ${socket.id} authenticated via token for user ${userId}`);
+      } catch (err) {
+        console.error(`Token verification error for socket ${socket.id}:`, err);
+        socket.emit("auth_error", { code: "AUTH_ERROR", message: "Authentication failed" });
+        socket.disconnect();
+        return;
+      }
+    } else if (clientUserId) {
+      // Backward compatibility: trust userId from client (will be removed in future)
+      console.warn(`Socket ${socket.id} using legacy userId auth - migrate to token auth`);
+      userId = clientUserId;
     } else {
-      console.warn(`No userId in handshake.auth for socket ${socket.id}`);
+      console.warn(`No authentication provided for socket ${socket.id}`);
+      socket.emit("auth_error", { code: "AUTH_REQUIRED", message: "Authentication required" });
+      socket.disconnect();
+      return;
     }
+    
+    // Store verified userId in socket data for use in handlers
+    socket.data.userId = userId;
+    userSocketMap.set(userId as string, socket.id);
+    // console.log(`User ${userId} registered with socket ${socket.id}`);
 
     // chat for channel 
     socket.on("join_room", (channelId: string) => {
@@ -42,17 +72,29 @@ export const setupChatSocket = (io: Server) => {
 
 
     socket.on('send_message', async (data: { channelId: string; senderId: string; content: string }) => {
+      // Use server-verified userId instead of client-provided senderId
+      const verifiedSenderId = socket.data.userId;
+      
       // 1. checking the coming data
-      if (!data.channelId || !data.senderId || !data.content) {
+      if (!data.channelId || !data.content) {
         console.error('Invalid chat message payload:', data);
+        return;
       }
+      
+      if (!verifiedSenderId) {
+        console.error('No verified userId for socket:', socket.id);
+        socket.emit('message_error', 'Authentication required');
+        return;
+      }
+      
       try {
         // 2. payload from services that we use to save the data..
+        // Using verifiedSenderId instead of data.senderId for security
 
         const savedMessage = await saveMessage({
           content: data.content,
           channel_id: data.channelId,
-          sender_id: data.senderId,
+          sender_id: verifiedSenderId,
         });
 
         // 3. If successful, broadcast the complete message from the DB to everyone in the room
@@ -71,9 +113,17 @@ export const setupChatSocket = (io: Server) => {
     // This event should now only handle text-based DMs for performance.
     socket.on("send_dm", async (dmPayload: { senderId: string; receiverId: string; message: string; mediaurl?: UrlObject }) => {
         // console.log('Received DM payload:', dmPayload);
-        const { senderId, receiverId, message, mediaurl } = dmPayload;
+        // Use server-verified userId instead of client-provided senderId
+        const verifiedSenderId = socket.data.userId;
+        const { receiverId, message, mediaurl } = dmPayload;
         
-        if (!receiverId || !senderId || !message) {
+        if (!verifiedSenderId) {
+            console.error("No verified userId for socket:", socket.id);
+            socket.emit("dm_error", "Authentication required");
+            return;
+        }
+        
+        if (!receiverId || !message) {
             console.error("Invalid DM payload:", dmPayload);
             socket.emit("dm_error", "Your DM is missing required information.");
             return;
@@ -81,11 +131,11 @@ export const setupChatSocket = (io: Server) => {
 
         try {
             // STEP 1: Correctly find or create the thread ID using persistent User IDs.
-            // console.log(`Processing DM from ${senderId} to ${receiverId}`);
+            // console.log(`Processing DM from ${verifiedSenderId} to ${receiverId}`);
             let threadId: string;
             
             // Sort the actual user IDs to ensure the thread is always found regardless of who sent the first message.
-            const [user1_id, user2_id] = [senderId, receiverId].sort();
+            const [user1_id, user2_id] = [verifiedSenderId, receiverId].sort();
 
             const { data: existingThread } = await supabase
               .from('dm_threads')
@@ -115,8 +165,12 @@ export const setupChatSocket = (io: Server) => {
               }
 
             // STEP 3: Save the message using the determined threadId.
+            // Use verified senderId for security
             const extendedDmPayload = {
-              ...dmPayload,
+              senderId: verifiedSenderId,
+              receiverId,
+              message,
+              mediaurl,
               threadId: threadId 
             };
             // console.log('Saving DM message with payload:', extendedDmPayload);
