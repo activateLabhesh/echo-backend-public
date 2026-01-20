@@ -255,62 +255,83 @@ interface Invite {
   is_valid: boolean;
 }
 
-//change to AuthorizedRequest if needed.
-export const inviteToServer = async(req:Request, res:Response):Promise<any> =>{
-  const { server_id, user_id , limit , expiry } = req.body;
-  if (!server_id) {
-        res.status(400).json({ error: 'Server ID is required in the request body.' });
-        return;
-    }
-  if(!user_id){
-      res.status(400).json({error: 'User id is required in request body .'});
-  }
-  //if no expiry , then its always valid .
-  //if no limit , any number of users can use to join the server with that link
-  try{
+// //change to AuthorizedRequest if needed.
+// export const inviteToServer = async(req:AuthenticatedRequest, res:Response):Promise<any> =>{
+//   const userId = req.user?.sub;
+//   const { server_id , limit , expiry } = req.body;
 
-    //check for roles
-    //first lets query this serverand check if this user is the owner (also if this server really exists)
-    const {data: serverData , error:queryerror} = await supabase
-          .from('servers')
-          .select('owner_id')
-          .eq('server_id', server_id)
-          .maybeSingle();
+//   if (!userId) {
+//     res.status(401).json({ error: 'Authentication required' });
+//     return;
+//   }
 
-    if(!serverData){
-      return res.status(404).json({error:"No such server id found"});
-    }
-    if(queryerror){
-      console.log(`Error in querying from servers table while creating invite : ${queryerror}`);
-      return res.status(500).json({error:"Server Error"});
-    }
+//   if (!server_id) {
+//     res.status(400).json({ error: 'Server ID is required in the request body.' });
+//     return;
+//   }
 
-    if(serverData.owner_id != user_id){
-      return res.status(404).json({error:"User given is not the owner"})
-    }
+//   const numericLimit = limit === undefined || limit === null || limit === '' ? null : Number(limit);
+//   if (numericLimit !== null && (Number.isNaN(numericLimit) || numericLimit < 0)) {
+//     res.status(400).json({ error: 'limit must be a non-negative number or omitted.' });
+//     return;
+//   }
 
-    const id = v4();
-    const { error: insertError } = await supabase.from('invites').insert({
-          id,
-          inviter_id: user_id,
-          server_id,
-          use_limit: limit,
-          expiry,
-          people_joined:0,//initially
-          is_valid:true
-    });
-    if(insertError){
-      console.log(`Error in creating invite : ${insertError}`);
-      return res.status(500).json({error:" Could not create invite"});
-    }
-    return res.status(201).json({invite_id : id});
+//   let expiryDate: string | null = null;
+//   if (expiry) {
+//     const parsedExpiry = new Date(expiry);
+//     if (Number.isNaN(parsedExpiry.getTime())) {
+//       res.status(400).json({ error: 'expiry must be a valid date.' });
+//       return;
+//     }
+//     if (parsedExpiry.getTime() <= Date.now()) {
+//       res.status(400).json({ error: 'expiry must be in the future.' });
+//       return;
+//     }
+//     expiryDate = parsedExpiry.toISOString();
+//   }
 
-  }
-  catch(e){
-    console.log(`Error in creating invite : ${e}`);
-    return res.status(500).json({error:" Could not create invite"});
-  }
-};
+//   try{
+//     const {data: serverData , error:queryerror} = await supabase
+//           .from('servers')
+//           .select('owner_id')
+//           .eq('id', server_id)
+//           .maybeSingle();
+
+//     if(queryerror){
+//       console.log(`Error in querying from servers table while creating invite : ${queryerror}`);
+//       return res.status(500).json({error:"Server Error"});
+//     }
+
+//     if(!serverData){
+//       return res.status(404).json({error:"No such server id found"});
+//     }
+
+//     if(serverData.owner_id !== userId){
+//       return res.status(403).json({error:"Only server owner can create invites"});
+//     }
+
+//     const id = v4();
+//     const { error: insertError } = await supabase.from('invites').insert({
+//           id,
+//           inviter_id: userId,
+//           server_id,
+//           use_limit: numericLimit,
+//           expiry: expiryDate,
+//           people_joined:0,
+//           is_valid:true
+//     });
+//     if(insertError){
+//       console.log(`Error in creating invite : ${insertError}`);
+//       return res.status(500).json({error:" Could not create invite"});
+//     }
+//     return res.status(201).json({invite_id : id});
+
+//   }
+//   catch(e){
+//     console.log(`Error in creating invite : ${e}`);
+//     return res.status(500).json({error:" Could not create invite"});
+//   }
+// };
 
 
 
@@ -331,7 +352,7 @@ export const joinWithInvite = async (
   }
 
   if (!inviteCode) {
-    res.status(200).json({
+    res.status(400).json({
       success: false,
       code: "INVITE_MISSING",
       message: "Invite code or link is required."
@@ -344,7 +365,7 @@ export const joinWithInvite = async (
     : inviteCode;
 
   if (!inviteId) {
-    res.status(200).json({
+    res.status(400).json({
       success: false,
       code: "INVITE_INVALID",
       message: "Invalid invite link."
@@ -353,23 +374,33 @@ export const joinWithInvite = async (
   }
 
   try {
-    const { data: invite } = await supabase
+    const { data: invite, error: inviteError } = await supabase
       .from("invites")
       .select("*")
       .eq("id", inviteId)
+      .eq("is_valid", true)
       .single();
 
-    if (!invite) {
-      res.status(200).json({
+    if (inviteError || !invite) {
+      res.status(404).json({
         success: false,
         code: "INVITE_NOT_FOUND",
-        message: "This invite link does not exist."
+        message: "This invite link does not exist or has been revoked."
+      });
+      return;
+    }
+
+    if (!invite.is_valid) {
+      res.status(410).json({
+        success: false,
+        code: "INVITE_REVOKED",
+        message: "This invite link is no longer valid."
       });
       return;
     }
 
     if (invite.expiry && new Date(invite.expiry) < new Date()) {
-      res.status(200).json({
+      res.status(410).json({
         success: false,
         code: "INVITE_EXPIRED",
         message: "This invite link has expired."
@@ -378,10 +409,11 @@ export const joinWithInvite = async (
     }
 
     if (
-      invite.use_limit &&
+      invite.use_limit !== null &&
+      invite.use_limit !== undefined &&
       invite.people_joined >= invite.use_limit
     ) {
-      res.status(200).json({
+      res.status(409).json({
         success: false,
         code: "INVITE_LIMIT_REACHED",
         message: "This invite link has reached its usage limit."
@@ -407,7 +439,7 @@ if (ban) {
       .maybeSingle();
 
     if (existingMember) {
-      res.status(200).json({
+      res.status(409).json({
         success: false,
         code: "ALREADY_MEMBER",
         message: "You are already a member of this server."
@@ -415,32 +447,57 @@ if (ban) {
       return;
     }
 
-    // Check if user is banned from this server
-    const { data: banData } = await supabase
-      .from('server_bans')
-      .select('*')
-      .eq('server_id', invite.server_id)
-      .eq('user_id', userId)
-      .single();
+    // Reserve a slot if there is a usage limit
+    let reservedInvite = invite;
+    if (invite.use_limit !== null && invite.use_limit !== undefined) {
+      const { data: updatedInvite, error: reserveError } = await supabase
+        .from('invites')
+        .update({ people_joined: invite.people_joined + 1 })
+        .eq('id', inviteId)
+        .eq('is_valid', true)
+        .lt('people_joined', invite.use_limit)
+        .select()
+        .single();
 
-    if (banData) {
-      res.status(200).json({
-        success: false,
-        code: "USER_BANNED",
-        message: "You are banned from this server."
-      });
-      return;
+      if (reserveError || !updatedInvite) {
+        res.status(409).json({
+          success: false,
+          code: "INVITE_LIMIT_REACHED",
+          message: "This invite link has reached its usage limit."
+        });
+        return;
+      }
+      reservedInvite = updatedInvite;
     }
 
-    await supabase.rpc("join_server_and_assign_member_role", {
+    const { error: joinError } = await supabase.rpc("join_server_and_assign_member_role", {
       p_server_id: invite.server_id,
       p_user_id: userId
     });
 
-    await supabase
-      .from("invites")
-      .update({ people_joined: invite.people_joined + 1 })
-      .eq("id", inviteId);
+    if (joinError) {
+      // Roll back reservation if join failed
+      if (invite.use_limit !== null && invite.use_limit !== undefined) {
+        await supabase
+          .from('invites')
+          .update({ people_joined: Math.max(0, reservedInvite.people_joined - 1) })
+          .eq('id', inviteId);
+      }
+      res.status(500).json({
+        success: false,
+        code: "SERVER_ERROR",
+        message: "Could not join the server. Please try again later."
+      });
+      return;
+    }
+
+    // Increment counter for unlimited invites after successful join
+    if (invite.use_limit === null || invite.use_limit === undefined) {
+      await supabase
+        .from("invites")
+        .update({ people_joined: invite.people_joined + 1 })
+        .eq("id", inviteId);
+    }
 
     res.status(200).json({
       success: true,
@@ -452,7 +509,7 @@ if (ban) {
 
   } catch (err) {
     console.error(err);
-    res.status(200).json({
+    res.status(500).json({
       success: false,
       code: "SERVER_ERROR",
       message: "Something went wrong. Please try again later."

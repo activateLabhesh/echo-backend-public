@@ -16,6 +16,8 @@ import roleroutes from './routes/roles';
 import contactroutes from "./routes/contact";
 import friendroutes from "./routes/friend";
 import mentionRoutes from "./routes/mentions";
+import { createAdapter } from '@socket.io/redis-adapter';
+import { createClient } from 'redis';
 
 import { rateLimiter } from './middleware/rateLimiter';
 import { setupChatSocket } from './sockets/chatSocket';
@@ -25,6 +27,12 @@ import {setIO} from "./sockets/chatSocket";
 
 const app = express();
 const httpServer = http.createServer(app);
+const pubClient = createClient({url: process.env.REDIS_URL});
+const subClient = pubClient.duplicate();
+
+pubClient.connect();
+subClient.connect();
+
 
 // Parse allowed origins from env (supports multiple comma-separated origins)
 const allowedOrigins = process.env.FRONTEND_URL?.split(',').map(url => url.trim()) || [
@@ -34,6 +42,7 @@ const allowedOrigins = process.env.FRONTEND_URL?.split(',').map(url => url.trim(
 ];
 
 const io = new Server(httpServer, {
+  adapter: createAdapter(pubClient,subClient),
   cors: {
     origin: (origin, callback) => {
       // Allow requests with no origin (mobile apps, Postman, etc.)
@@ -59,6 +68,11 @@ const io = new Server(httpServer, {
   perMessageDeflate: false,
   httpCompression: false
 });
+
+
+io.engine.on("connection",(rawSocket) => {
+  rawSocket.request = null;
+})
 
 app.set('socketio', io);
 setupChatSocket(io);
@@ -88,15 +102,15 @@ const corsOptions: cors.CorsOptions = {
 app.use(cors(corsOptions));
 
 // Routes with middleware
-app.use('/api/auth', rateLimiter, authRoutes);
-app.use('/api/message', messageRoutes);
-app.use('/api/profile', profileRoutes);
-app.use('/api/newserver', serverroutes);
-app.use('/api/channel', channelroutes);
-app.use('/api/roles', roleroutes);
-app.use('/api/contact', contactroutes);
-app.use('/api/friends',friendroutes);
-app.use('/api/mentions', mentionRoutes);
+app.use('/api/auth', authRoutes);
+app.use('/api/message', rateLimiter, messageRoutes);
+app.use('/api/profile', rateLimiter, profileRoutes);
+app.use('/api/newserver', rateLimiter, serverroutes);
+app.use('/api/channel', rateLimiter, channelroutes);
+app.use('/api/roles', rateLimiter, roleroutes);
+app.use('/api/contact', rateLimiter, contactroutes);
+app.use('/api/friends', rateLimiter, friendroutes);
+app.use('/api/mentions', rateLimiter, mentionRoutes);
 // Health check endpoint
 app.get('/', (_req: Request, res: Response) => {
   res.json({ message: 'Hello from echo-backend!', status: 'healthy' });

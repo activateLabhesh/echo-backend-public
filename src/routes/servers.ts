@@ -9,7 +9,7 @@ import {
   screation, 
   getServers, 
   joinServer, 
-  inviteToServer, 
+  // inviteToServer, 
   joinWithInvite,
   updateServer,
   getServerDetails,
@@ -41,7 +41,6 @@ router.post('/create/', authenticate, busboyMiddleware, screation);
 router.get('/getServers/', authenticate, getServers);
 router.post('/joinServer/', authenticate, joinServer);
 router.post('/joinwithinvite', authenticate, joinWithInvite);
-router.post('/invite', inviteToServer);
 
 // More specific routes should come before generic parameterized routes
 // User search route
