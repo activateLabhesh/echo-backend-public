@@ -6,8 +6,7 @@ import Redis from 'ioredis';
 const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
 
 const WINDOW_SIZE_IN_SECONDS = 60;
-const MAX_REQUESTS = 10;
-//10 requests per minute 
+const MAX_REQUESTS = 20; 
 
 export const rateLimiter = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   let key: string | undefined;

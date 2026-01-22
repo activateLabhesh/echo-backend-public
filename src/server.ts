@@ -102,15 +102,15 @@ const corsOptions: cors.CorsOptions = {
 app.use(cors(corsOptions));
 
 // Routes with middleware
-app.use('/api/auth', authRoutes);
-app.use('/api/message', rateLimiter, messageRoutes);
-app.use('/api/profile', rateLimiter, profileRoutes);
-app.use('/api/newserver', rateLimiter, serverroutes);
-app.use('/api/channel', rateLimiter, channelroutes);
-app.use('/api/roles', rateLimiter, roleroutes);
-app.use('/api/contact', rateLimiter, contactroutes);
-app.use('/api/friends', rateLimiter, friendroutes);
-app.use('/api/mentions', rateLimiter, mentionRoutes);
+app.use('/api/auth', rateLimiter,authRoutes);
+app.use('/api/message',  messageRoutes);
+app.use('/api/profile',  profileRoutes);
+app.use('/api/newserver',  serverroutes);
+app.use('/api/channel',  channelroutes);
+app.use('/api/roles',  roleroutes);
+app.use('/api/contact',  contactroutes);
+app.use('/api/friends',  friendroutes);
+app.use('/api/mentions',mentionRoutes);
 // Health check endpoint
 app.get('/', (_req: Request, res: Response) => {
   res.json({ message: 'Hello from echo-backend!', status: 'healthy' });
