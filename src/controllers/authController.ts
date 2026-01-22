@@ -215,7 +215,12 @@ export const logout = async (req: Request, res: Response): Promise<void> => {
     res.status(200).json({ message: 'Logged out successfully' });
     return;
   }
-  const accessToken = req.cookies.access_token;
+  
+  // Check for token in cookies or Authorization header
+  const accessToken = req.cookies.access_token || 
+    (req.headers.authorization?.startsWith('Bearer ') 
+      ? req.headers.authorization.substring(7) 
+      : null);
 
   if (!accessToken) {
     res.status(400).json({ message: 'Already logged out or no token found' });

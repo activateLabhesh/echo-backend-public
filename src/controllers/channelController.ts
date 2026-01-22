@@ -3,17 +3,78 @@ import { supabase } from '../client/supabase';
 import { AuthenticatedRequest } from '../middleware/authMiddleware';
 import { checkOwnerOrAdmin } from './roleController';
 
-// Helper function to check if user has access to a private channel
+// Helper function to get user's roles in a server
+async function getUserRoles(userId: string, serverId: string) {
+  // Step 1: Get ALL user's role IDs (user_roles table doesn't have server_id column)
+  const { data: userRoleLinks, error: userRoleError } = await supabase
+    .from('user_roles')
+    .select('role_id')
+    .eq('user_id', userId);
+
+  if (userRoleError || !userRoleLinks || userRoleLinks.length === 0) {
+    return [];
+  }
+
+  const roleIds = userRoleLinks.map(ur => ur.role_id);
+
+  // Step 2: Get role details for those role IDs, filtered by server_id
+  const { data: roles, error: rolesError } = await supabase
+    .from('roles')
+    .select('id, name, role_type, server_id')
+    .in('id', roleIds)
+    .eq('server_id', serverId);  // Filter by server_id in roles table
+
+  if (rolesError || !roles || roles.length === 0) {
+    return [];
+  }
+
+  // Step 3: Combine them in the expected format
+  const combined = userRoleLinks
+    .map(urLink => {
+      const role = roles.find(r => r.id === urLink.role_id);
+      if (!role) return null;  // Skip if role not in this server
+      return {
+        role_id: urLink.role_id,
+        roles: {
+          id: role.id,
+          name: role.name,
+          role_type: role.role_type,
+          server_id: role.server_id
+        }
+      };
+    })
+    .filter(r => r !== null);  // Remove nulls
+
+  return combined;
+}
+
+// Helper function to check if user is admin/owner
+function isAdmin(userRoles: any[]) {
+  return userRoles.some((ur: any) => {
+    const roleName = (ur.roles?.name || '').toString().toLowerCase();
+    const roleType = (ur.roles?.role_type || '').toString().toLowerCase();
+    return ['admin', 'owner'].includes(roleName) || ['admin', 'owner'].includes(roleType);
+  });
+}
+
+// Helper function to check if user is moderator
+function isModerator(userRoles: any[], moderatorRoleIds: string[]) {
+  return userRoles.some((ur: any) => 
+    moderatorRoleIds.includes(ur.role_id)
+  );
+}
+
+// Helper function to check if user has access to view a channel
 export async function checkChannelAccess(userId: string, channelId: string): Promise<boolean> {
   const { data: channel } = await supabase
     .from('channels')
-    .select('*, server_id, is_private')
+    .select('*, server_id, channel_type, allowed_role_ids')
     .eq('id', channelId)
     .maybeSingle();
 
   if (!channel) return false;
 
-  // Check if user is server owner first (owners can see all channels)
+  // Check if user is server owner (owners can see all channels)
   const { data: server } = await supabase
     .from('servers')
     .select('owner_id')
@@ -22,12 +83,18 @@ export async function checkChannelAccess(userId: string, channelId: string): Pro
 
   if (server?.owner_id === userId) return true;
 
-  // Check if user is admin (admins can see all channels)
-  const { isAdmin } = await checkOwnerOrAdmin(userId, channel.server_id);
-  if (isAdmin) return true;
+  // Get user's roles in this server
+  const userRoles = await getUserRoles(userId, channel.server_id);
+  const userRoleIds = userRoles.map((ur: any) => ur.role_id);
 
-  // If channel is not private, all server members can access
-  if (!channel.is_private) {
+  // Admins can always see all channels
+  if (isAdmin(userRoles)) return true;
+
+  // Default to 'normal' if channel_type is not set
+  const channelType = channel.channel_type || 'normal';
+
+  // For normal and read_only channels, all server members can view
+  if (channelType === 'normal' || channelType === 'read_only') {
     const { data: membership } = await supabase
       .from('server_members')
       .select('id')
@@ -38,35 +105,103 @@ export async function checkChannelAccess(userId: string, channelId: string): Pro
     return !!membership;
   }
 
-  // For private channels, check role access
-  const { data: userRoles } = await supabase
-    .from('user_roles')
-    .select('role_id')
-    .eq('user_id', userId);
+  // For role_restricted channels, check if user has allowed role
+  if (channelType === 'role_restricted') {
+    const allowedRoles = channel.allowed_role_ids || [];
+    return allowedRoles.some((roleId: string) => userRoleIds.includes(roleId));
+  }
 
-  if (!userRoles || userRoles.length === 0) return false;
-
-  const userRoleIds = userRoles.map(ur => ur.role_id);
-
-  // Check if any of user's roles have access to this channel
-  const { data: channelAccess } = await supabase
-    .from('channel_role_access')
-    .select('id')
-    .eq('channel_id', channelId)
-    .in('role_id', userRoleIds);
-
-  return !!(channelAccess && channelAccess.length > 0);
+  return false;
 }
 
-// Set channel role access (Owner/Admin only)
+// Helper function to check if user can send messages in a channel
+export async function checkChannelSendPermission(userId: string, channelId: string): Promise<{ canSend: boolean; error?: string }> {
+  const { data: channel } = await supabase
+    .from('channels')
+    .select('*, server_id, channel_type, allowed_role_ids, moderator_role_ids')
+    .eq('id', channelId)
+    .maybeSingle();
+
+  if (!channel) {
+    return { canSend: false, error: 'Channel not found' };
+  }
+
+  // Check if user is server owner first (owners can always send)
+  const { data: server } = await supabase
+    .from('servers')
+    .select('owner_id')
+    .eq('id', channel.server_id)
+    .single();
+
+  if (server?.owner_id === userId) {
+    return { canSend: true };
+  }
+
+  // Get user's roles in this server
+  const userRoles = await getUserRoles(userId, channel.server_id);
+  const userRoleIds = userRoles.map((ur: any) => ur.role_id);
+
+  const admin = isAdmin(userRoles);
+  const moderator = isModerator(userRoles, channel.moderator_role_ids || []);
+
+  // Admins can always send
+  if (admin) {
+    return { canSend: true };
+  }
+
+  const channelType = channel.channel_type || 'normal';
+
+  // Normal channels: everyone can send
+  if (channelType === 'normal') {
+    return { canSend: true };
+  }
+
+  // Read-only channels: only admins, owners, and moderators can send
+  if (channelType === 'read_only') {
+    if (moderator) {
+      return { canSend: true };
+    }
+    return { 
+      canSend: false, 
+      error: 'Only admins and moderators can send messages in this read-only channel' 
+    };
+  }
+
+  // Role-restricted channels: SIMPLE - if you have the allowed role, you can send
+  if (channelType === 'role_restricted') {
+    const allowedRoles = channel.allowed_role_ids || [];
+    const hasAllowedRole = allowedRoles.some((roleId: string) => userRoleIds.includes(roleId));
+    
+    if (hasAllowedRole) {
+      return { canSend: true };
+    }
+    
+    return { 
+      canSend: false, 
+      error: 'You need specific roles to access this channel' 
+    };
+  }
+
+  // Default: allow sending (should not reach here, but just in case)
+  return { canSend: true };
+}
+
+// Set channel permissions (Owner/Admin only)
 export const setChannelRoleAccess = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const { channel_id } = req.params;
-    const { roleIds, isPrivate } = req.body; // roleIds is array of role IDs
+    const { channel_type, allowed_role_ids, moderator_role_ids } = req.body;
     const userId = req.user?.sub;
 
     if (!userId) {
       res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    // Validate channel_type
+    const validChannelTypes = ['normal', 'read_only', 'role_restricted'];
+    if (channel_type && !validChannelTypes.includes(channel_type)) {
+      res.status(400).json({ error: 'Invalid channel type. Must be: normal, read_only, or role_restricted' });
       return;
     }
 
@@ -86,46 +221,70 @@ export const setChannelRoleAccess = async (req: AuthenticatedRequest, res: Respo
     const { isOwner, isAdmin } = await checkOwnerOrAdmin(userId, channel.server_id);
 
     if (!isOwner && !isAdmin) {
-      res.status(403).json({ error: 'Only owners and admins can manage channel access' });
+      res.status(403).json({ error: 'Only owners and admins can manage channel permissions' });
       return;
     }
 
-    // Update channel privacy setting
-    await supabase
-      .from('channels')
-      .update({ is_private: isPrivate })
-      .eq('id', channel_id);
+    // 🔒 SECURITY: Validate that all role IDs belong to the same server
+    if (allowed_role_ids && Array.isArray(allowed_role_ids) && allowed_role_ids.length > 0) {
+      const { data: allowedRoles, error: roleCheckError } = await supabase
+        .from('roles')
+        .select('id, server_id')
+        .in('id', allowed_role_ids);
 
-    // Remove existing role access
-    await supabase
-      .from('channel_role_access')
-      .delete()
-      .eq('channel_id', channel_id);
+      if (roleCheckError || !allowedRoles) {
+        res.status(500).json({ error: 'Failed to validate role IDs' });
+        return;
+      }
 
-    // Add new role access if channel is private
-    if (isPrivate && roleIds && roleIds.length > 0) {
-      const accessRecords = roleIds.map((roleId: string) => ({
-        channel_id: channel_id,
-        role_id: roleId
-      }));
-
-      const { error } = await supabase
-        .from('channel_role_access')
-        .insert(accessRecords);
-
-      if (error) {
-        res.status(500).json({ error: error.message });
+      const invalidRoles = allowedRoles.filter(role => role.server_id !== channel.server_id);
+      if (invalidRoles.length > 0 || allowedRoles.length !== allowed_role_ids.length) {
+        res.status(400).json({ error: 'One or more role IDs do not belong to this server or do not exist' });
         return;
       }
     }
 
-    res.status(200).json({ message: 'Channel access updated successfully' });
+    if (moderator_role_ids && Array.isArray(moderator_role_ids) && moderator_role_ids.length > 0) {
+      const { data: modRoles, error: modRoleCheckError } = await supabase
+        .from('roles')
+        .select('id, server_id')
+        .in('id', moderator_role_ids);
+
+      if (modRoleCheckError || !modRoles) {
+        res.status(500).json({ error: 'Failed to validate moderator role IDs' });
+        return;
+      }
+
+      const invalidModRoles = modRoles.filter(role => role.server_id !== channel.server_id);
+      if (invalidModRoles.length > 0 || modRoles.length !== moderator_role_ids.length) {
+        res.status(400).json({ error: 'One or more moderator role IDs do not belong to this server or do not exist' });
+        return;
+      }
+    }
+
+    // Update channel with new permissions
+    const updateData: any = {};
+    if (channel_type) updateData.channel_type = channel_type;
+    if (allowed_role_ids !== undefined) updateData.allowed_role_ids = allowed_role_ids || [];
+    if (moderator_role_ids !== undefined) updateData.moderator_role_ids = moderator_role_ids || [];
+
+    const { error } = await supabase
+      .from('channels')
+      .update(updateData)
+      .eq('id', channel_id);
+
+    if (error) {
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    res.status(200).json({ message: 'Channel permissions updated successfully' });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
 };
 
-// Get channel role access
+// Get channel permissions
 export const getChannelRoleAccess = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const { channel_id } = req.params;
@@ -139,7 +298,7 @@ export const getChannelRoleAccess = async (req: AuthenticatedRequest, res: Respo
     // Get channel info
     const { data: channel } = await supabase
       .from('channels')
-      .select('server_id, is_private')
+      .select('server_id, channel_type, allowed_role_ids, moderator_role_ids')
       .eq('id', channel_id)
       .maybeSingle();
 
@@ -148,26 +307,114 @@ export const getChannelRoleAccess = async (req: AuthenticatedRequest, res: Respo
       return;
     }
 
-    const { data: access, error } = await supabase
-      .from('channel_role_access')
-      .select(`
-        id,
-        role_id,
-        roles(id, name, color)
-      `)
-      .eq('channel_id', channel_id);
+    // Get role details for allowed_role_ids
+    let allowedRoles: any[] = [];
+    if (channel.allowed_role_ids && channel.allowed_role_ids.length > 0) {
+      const { data: rolesData } = await supabase
+        .from('roles')
+        .select('id, name, color')
+        .in('id', channel.allowed_role_ids);
+      allowedRoles = rolesData || [];
+    }
 
-    if (error) {
-      res.status(500).json({ error: error.message });
-      return;
+    // Get role details for moderator_role_ids
+    let moderatorRoles: any[] = [];
+    if (channel.moderator_role_ids && channel.moderator_role_ids.length > 0) {
+      const { data: rolesData } = await supabase
+        .from('roles')
+        .select('id, name, color')
+        .in('id', channel.moderator_role_ids);
+      moderatorRoles = rolesData || [];
     }
 
     res.status(200).json({
-      is_private: channel.is_private,
-      allowed_roles: access
+      channel_type: channel.channel_type,
+      allowed_roles: allowedRoles,
+      moderator_roles: moderatorRoles
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
+  }
+};
+
+// Get channel permissions for current user
+export const getChannelPermissions = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const { channelId } = req.params;
+    const userId = req.user?.sub;
+
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const { data: channel } = await supabase
+      .from('channels')
+      .select('channel_type, allowed_role_ids, moderator_role_ids, server_id, name')
+      .eq('id', channelId)
+      .single();
+
+    if (!channel) {
+      res.status(404).json({ error: 'Channel not found' });
+      return;
+    }
+
+    // Check if user is server owner
+    const { data: server } = await supabase
+      .from('servers')
+      .select('owner_id')
+      .eq('id', channel.server_id)
+      .single();
+
+    const isOwner = server?.owner_id === userId;
+
+    const userRoles = await getUserRoles(userId, channel.server_id);
+    const userRoleIds = userRoles.map((ur: any) => ur.role_id);
+
+    const admin = isAdmin(userRoles);
+    const moderator = isModerator(userRoles, channel.moderator_role_ids || []);
+
+    let canView = true;
+    let canSend = true;
+
+    // Owners and admins can always view and send
+    if (isOwner || admin) {
+      res.status(200).json({
+        channelType: channel.channel_type,
+        canView: true,
+        canSend: true,
+        isAdmin: admin,
+        isModerator: moderator,
+        isOwner: isOwner
+      });
+      return;
+    }
+
+    // Check view permissions
+    if (channel.channel_type === 'role_restricted') {
+      canView = (channel.allowed_role_ids || []).some((roleId: string) => userRoleIds.includes(roleId));
+    }
+
+    // Check send permissions
+    if (channel.channel_type === 'read_only') {
+      // Read-only: only moderators can send
+      canSend = moderator;
+    } else if (channel.channel_type === 'role_restricted') {
+      // Role-restricted: SIMPLE - if user has allowed role, they can send
+      canSend = (channel.allowed_role_ids || []).some((roleId: string) => userRoleIds.includes(roleId));
+    }
+
+    res.status(200).json({
+      channelType: channel.channel_type,
+      canView,
+      canSend,
+      isAdmin: admin,
+      isModerator: moderator,
+      isOwner: isOwner
+    });
+  } catch (error: any) {
+    console.error('Error getting channel permissions:', error);
+    res.status(500).json({ error: 'Server error' });
   }
 };
 
@@ -205,13 +452,16 @@ export const getChannelsWithAccess = async (req: AuthenticatedRequest, res: Resp
       }
     }
 
-    // Get all channels with category information
+    // Get all channels with category information AND permission system
     const { data: channels, error: channelsError } = await supabase
       .from('channels')
       .select(`
         id, 
         name, 
         type, 
+        channel_type,
+        allowed_role_ids,
+        moderator_role_ids,
         is_private, 
         category_id, 
         position,
@@ -228,45 +478,42 @@ export const getChannelsWithAccess = async (req: AuthenticatedRequest, res: Resp
       throw new Error(`Database error: ${channelsError.message}`);
     }
 
-    // If user is owner or admin, return all channels
+    // If user is owner or admin, return all channels with is_private flag
     if (isOwner || isAdmin) {
-      res.status(200).json(channels || []);
+      const channelsWithFlags = channels?.map(channel => ({
+        ...channel,
+        is_private: channel.channel_type === 'role_restricted'
+      })) || [];
+      res.status(200).json(channelsWithFlags);
       return;
     }
 
-    // Get user's roles
-    const { data: userRoles } = await supabase
-      .from('user_roles')
-      .select(`
-        role_id,
-        roles!inner(server_id)
-      `)
-      .eq('user_id', userId);
+    // Get user's roles in this server
+    const userRoles = await getUserRoles(userId, server_id);
+    const userRoleIds = userRoles.map((ur: any) => ur.role_id);
 
-    const userRoleIds = userRoles
-      ?.filter((ur: any) => ur.roles?.server_id === server_id)
-      .map(ur => ur.role_id) || [];
-
-    // Get channel role access for private channels
-    const privateChannelIds = channels?.filter(c => c.is_private).map(c => c.id) || [];
-
-    let accessiblePrivateChannelIds: string[] = [];
-    
-    if (privateChannelIds.length > 0 && userRoleIds.length > 0) {
-      const { data: channelAccess } = await supabase
-        .from('channel_role_access')
-        .select('channel_id')
-        .in('channel_id', privateChannelIds)
-        .in('role_id', userRoleIds);
-
-      accessiblePrivateChannelIds = [...new Set(channelAccess?.map(ca => ca.channel_id) || [])];
-    }
-
-    // Filter channels: include public channels and accessible private channels
+    // Filter channels based on new permission system
     const accessibleChannels = channels?.filter(channel => {
-      if (!channel.is_private) return true;
-      return accessiblePrivateChannelIds.includes(channel.id);
-    }) || [];
+      const channelType = channel.channel_type || 'normal';
+      
+      // Normal and read_only channels are visible to all members
+      if (channelType === 'normal' || channelType === 'read_only') {
+        return true;
+      }
+      
+      // role_restricted channels: check if user has allowed role
+      if (channelType === 'role_restricted') {
+        const allowedRoles = channel.allowed_role_ids || [];
+        const hasAccess = allowedRoles.some((roleId: string) => userRoleIds.includes(roleId));
+        return hasAccess;
+      }
+
+      // Default: show channel
+      return true;
+    }).map(channel => ({
+      ...channel,
+      is_private: channel.channel_type === 'role_restricted'
+    })) || [];
 
     res.status(200).json(accessibleChannels);
 
@@ -278,7 +525,7 @@ export const getChannelsWithAccess = async (req: AuthenticatedRequest, res: Resp
 };
 
 export const createChannel = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
-  const { name, type, is_private, category_id, position } = req.body;
+  const { name, type, is_private, category_id, position, channel_type, allowed_role_ids, moderator_role_ids } = req.body;
   const { server_id } = req.params;
   const userId = req.user?.sub;
 
@@ -286,12 +533,19 @@ export const createChannel = async (req: AuthenticatedRequest, res: Response): P
      res.status(401).json({ error: 'Authentication error: User ID not found in token.' });
      return;
   }
-  if (!name || !type || is_private === undefined) {
-     res.status(400).json({ error: 'Request body must include name, type, and is_private.' });
+  if (!name || !type) {
+     res.status(400).json({ error: 'Request body must include name and type.' });
      return;
   }
   if (!server_id) {
     res.status(400).json({ error: 'Server ID is required in the URL parameters.' });
+    return;
+  }
+
+  // Validate channel_type
+  const validChannelTypes = ['normal', 'read_only', 'role_restricted'];
+  if (channel_type && !validChannelTypes.includes(channel_type)) {
+    res.status(400).json({ error: 'Invalid channel type. Must be: normal, read_only, or role_restricted' });
     return;
   }
 
@@ -302,6 +556,49 @@ export const createChannel = async (req: AuthenticatedRequest, res: Response): P
     if (!isOwner && !isAdmin) {
       res.status(403).json({ error: 'Only server owners and admins can create channels.' });
       return;
+    }
+
+    // Only admins can create restricted channels
+    if (channel_type && channel_type !== 'normal' && !isOwner && !isAdmin) {
+      res.status(403).json({ error: 'Only owners and admins can create restricted channels.' });
+      return;
+    }
+
+    // 🔒 SECURITY: Validate that all role IDs belong to the same server
+    if (allowed_role_ids && Array.isArray(allowed_role_ids) && allowed_role_ids.length > 0) {
+      const { data: allowedRoles, error: roleCheckError } = await supabase
+        .from('roles')
+        .select('id, server_id')
+        .in('id', allowed_role_ids);
+
+      if (roleCheckError || !allowedRoles) {
+        res.status(500).json({ error: 'Failed to validate role IDs' });
+        return;
+      }
+
+      const invalidRoles = allowedRoles.filter(role => role.server_id !== server_id);
+      if (invalidRoles.length > 0 || allowedRoles.length !== allowed_role_ids.length) {
+        res.status(400).json({ error: 'One or more role IDs do not belong to this server or do not exist' });
+        return;
+      }
+    }
+
+    if (moderator_role_ids && Array.isArray(moderator_role_ids) && moderator_role_ids.length > 0) {
+      const { data: modRoles, error: modRoleCheckError } = await supabase
+        .from('roles')
+        .select('id, server_id')
+        .in('id', moderator_role_ids);
+
+      if (modRoleCheckError || !modRoles) {
+        res.status(500).json({ error: 'Failed to validate moderator role IDs' });
+        return;
+      }
+
+      const invalidModRoles = modRoles.filter(role => role.server_id !== server_id);
+      if (invalidModRoles.length > 0 || modRoles.length !== moderator_role_ids.length) {
+        res.status(400).json({ error: 'One or more moderator role IDs do not belong to this server or do not exist' });
+        return;
+      }
     }
 
     // Determine category_id: use provided one or find default based on channel type
@@ -348,20 +645,23 @@ export const createChannel = async (req: AuthenticatedRequest, res: Response): P
       return;
     }
 
-    // Update the channel with category_id and position
+    // Update the channel with category_id, position, and permission fields
     if (newChannel?.[0]?.id) {
       const { data: updatedChannel, error: updateError } = await supabase
         .from('channels')
         .update({ 
           category_id: finalCategoryId,
-          position: finalPosition 
+          position: finalPosition,
+          channel_type: channel_type || 'normal',
+          allowed_role_ids: allowed_role_ids || [],
+          moderator_role_ids: moderator_role_ids || []
         })
         .eq('id', newChannel[0].id)
-        .select('id, name, type, is_private, category_id, position')
+        .select('id, name, type, is_private, category_id, position, channel_type, allowed_role_ids, moderator_role_ids')
         .single();
 
       if (updateError) {
-        console.error('Error updating channel with category:', updateError);
+        console.error('Error updating channel with category and permissions:', updateError);
       }
 
       res.status(201).json(updatedChannel || newChannel[0]);

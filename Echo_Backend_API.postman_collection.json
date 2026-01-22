@@ -942,7 +942,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n  \"name\": \"general\",\n  \"type\": \"text\",\n  \"description\": \"General discussion\"\n}"
+							"raw": "{\n  \"name\": \"general\",\n  \"type\": \"text\",\n  \"description\": \"General discussion\",\n  \"channel_type\": \"normal\",\n  \"allowed_role_ids\": [],\n  \"moderator_role_ids\": []\n}"
 						},
 						"url": {
 							"raw": "{{BASE_URL}}/api/channel/{{SERVER_ID}}/NewChannel",
@@ -1011,7 +1011,7 @@
 					}
 				},
 				{
-					"name": "Set Channel Role Access",
+					"name": "Set Channel Permissions",
 					"request": {
 						"method": "POST",
 						"header": [
@@ -1026,12 +1026,29 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n  \"roleId\": \"role-uuid-here\",\n  \"canView\": true,\n  \"canSend\": true\n}"
+							"raw": "{\n  \"channel_type\": \"read_only\",\n  \"allowed_role_ids\": [],\n  \"moderator_role_ids\": [\"role-uuid-here\"]\n}"
 						},
 						"url": {
 							"raw": "{{BASE_URL}}/api/channel/{{CHANNEL_ID}}/role-access",
 							"host": ["{{BASE_URL}}"],
 							"path": ["api", "channel", "{{CHANNEL_ID}}", "role-access"]
+						}
+					}
+				},
+				{
+					"name": "Get Channel Permissions",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{ACCESS_TOKEN}}"
+							}
+						],
+						"url": {
+							"raw": "{{BASE_URL}}/api/channel/channels/{{CHANNEL_ID}}/permissions",
+							"host": ["{{BASE_URL}}"],
+							"path": ["api", "channel", "channels", "{{CHANNEL_ID}}", "permissions"]
 						}
 					}
 				},

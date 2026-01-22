@@ -4,6 +4,7 @@ import { saveMessage } from "../lib/messageServices";
 import { saveDMMessage } from "../lib/dmMessageServices";
 import { supabase } from "../client/supabase";
 import { UrlObject } from "url";
+import { checkChannelSendPermission } from "../controllers/channelController";
 
 export const userSocketMap = new Map<string, string>(); // Map<userId, socketId>
 
@@ -78,6 +79,7 @@ export const setupChatSocket = (io: Server) => {
       // 1. checking the coming data
       if (!data.channelId || !data.content) {
         console.error('Invalid chat message payload:', data);
+        socket.emit('message_error', 'Invalid message data.');
         return;
       }
       
@@ -86,24 +88,37 @@ export const setupChatSocket = (io: Server) => {
         socket.emit('message_error', 'Authentication required');
         return;
       }
-      
+
+      // 🔒 SECURITY: Verify the senderId matches the authenticated user (prevent impersonation)
+      if (data.senderId !== verifiedSenderId) {
+        console.error(`SECURITY: User ${verifiedSenderId} attempted to impersonate ${data.senderId}`);
+        socket.emit('message_error', 'Unauthorized: User ID mismatch.');
+        return;
+      }
+
       try {
+        // 🔒 SECURITY: Check if user has permission to send messages in this channel
+        const permissionCheck = await checkChannelSendPermission(verifiedSenderId, data.channelId);
+        
+        if (!permissionCheck.canSend) {
+          socket.emit('message_error', permissionCheck.error || 'You do not have permission to send messages in this channel.');
+          return;
+        }
+
         // 2. payload from services that we use to save the data..
         // Using verifiedSenderId instead of data.senderId for security
-
+        // Save the message to the database
         const savedMessage = await saveMessage({
           content: data.content,
           channel_id: data.channelId,
           sender_id: verifiedSenderId,
         });
 
-        // 3. If successful, broadcast the complete message from the DB to everyone in the room
+        // If successful, broadcast the complete message from the DB to everyone in the room
         io.to(data.channelId).emit('new_message', savedMessage);
-        
-        // console.log(`Message from ${data.senderId} was saved and broadcasted to room ${data.channelId}`);
 
       } catch (error) {
-        // 4. If an error occurs, log it...
+        // If an error occurs, log it and notify the sender
         console.error('Failed to save or broadcast message:', error);
         socket.emit('message_error', 'Your message could not be sent.');
       }
@@ -115,7 +130,7 @@ export const setupChatSocket = (io: Server) => {
         // console.log('Received DM payload:', dmPayload);
         // Use server-verified userId instead of client-provided senderId
         const verifiedSenderId = socket.data.userId;
-        const { receiverId, message, mediaurl } = dmPayload;
+        const { senderId, receiverId, message, mediaurl } = dmPayload;
         
         if (!verifiedSenderId) {
             console.error("No verified userId for socket:", socket.id);
@@ -126,6 +141,13 @@ export const setupChatSocket = (io: Server) => {
         if (!receiverId || !message) {
             console.error("Invalid DM payload:", dmPayload);
             socket.emit("dm_error", "Your DM is missing required information.");
+            return;
+        }
+
+        // 🔒 SECURITY: Verify the senderId matches the authenticated user (prevent impersonation)
+        if (senderId !== verifiedSenderId) {
+            console.error(`SECURITY: User ${verifiedSenderId} attempted to impersonate ${senderId} in DM`);
+            socket.emit("dm_error", "Unauthorized: User ID mismatch.");
             return;
         }
 

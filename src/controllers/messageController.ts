@@ -4,6 +4,7 @@ import { v4 } from 'uuid';
 import { AuthenticatedRequest } from "../middleware/authMiddleware";
 import { getIO, userSocketMap } from "../sockets/chatSocket";
 import { parseMentions, resolveMentions, processMentions } from '../lib/mentionParser';
+import { checkChannelSendPermission } from './channelController';
 
 // --- Required for file uploads ---
 // Make sure you have `multer` installed in your project.
@@ -272,6 +273,14 @@ export const channelmessagePostController = async (req:AuthenticatedRequest, res
         }
         if (!content && !uploadedFile) {
             return res.status(400).json({ error: "Message content or a file is required." });
+        }
+
+        // **NEW: Check channel send permissions**
+        const permissionCheck = await checkChannelSendPermission(sender_id, channel_id);
+        if (!permissionCheck.canSend) {
+            return res.status(403).json({ 
+                error: permissionCheck.error || 'You do not have permission to send messages in this channel' 
+            });
         }
 
         let media_url:string | null = null;

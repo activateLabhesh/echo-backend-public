@@ -15,18 +15,26 @@ export async function checkOwnerOrAdmin(userId: string, serverId: string): Promi
 
   const isOwner = server?.owner_id === userId;
 
-  // Check if user has admin role
+  // Check if user has admin role (check both role_type and name for consistency)
   const { data: userRoles } = await supabase
     .from('user_roles')
     .select(`
       role_id,
-      roles!inner(role_type, server_id)
+      roles!inner(role_type, name, server_id)
     `)
     .eq('user_id', userId);
 
-  const isAdmin = userRoles?.some((ur: any) => 
-    ur.roles?.server_id === serverId && ur.roles?.role_type === 'admin'
-  ) || false;
+  const isAdmin = userRoles?.some((ur: any) => {
+    const inCorrectServer = ur.roles?.server_id === serverId;
+    const roleType = (ur.roles?.role_type || '').toString().toLowerCase();
+    const roleName = (ur.roles?.name || '').toString().toLowerCase();
+    return inCorrectServer && (
+      roleType === 'admin' || 
+      roleType === 'owner' || 
+      roleName === 'admin' || 
+      roleName === 'owner'
+    );
+  }) || false;
 
   return { isOwner, isAdmin };
 }

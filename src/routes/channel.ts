@@ -6,7 +6,8 @@ import {
   joinChannel,
   setChannelRoleAccess,
   getChannelRoleAccess,
-  getChannelsWithAccess
+  getChannelsWithAccess,
+  getChannelPermissions
 } from '../controllers/channelController';
 import {
   getChannelCategories,
@@ -41,5 +42,8 @@ route.post('/:serverId/joinChannel', authenticate, joinChannel);
 route.get('/:server_id/channels-with-access', authenticate, getChannelsWithAccess);
 route.post('/:channel_id/role-access', authenticate, setChannelRoleAccess);
 route.get('/:channel_id/role-access', authenticate, getChannelRoleAccess);
+
+// Get channel permissions for current user
+route.get('/channels/:channelId/permissions', authenticate, getChannelPermissions);
 
 export default route;
