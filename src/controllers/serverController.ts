@@ -18,7 +18,7 @@ export const screation = async (req: AuthenticatedRequest, res: Response): Promi
   }
   if (!name) {
     res.status(400).json({ error: 'Server name is required' });
-    return   
+    return
   }
   if (!email_Id) {
     res.status(401).json({ error: 'Authentication error: User email not found.' });
@@ -360,9 +360,14 @@ export const joinWithInvite = async (
     return;
   }
 
-  let inviteId = inviteCode.includes("/invite/")
-    ? inviteCode.split("/invite/")[1]
-    : inviteCode;
+  const rawInviteCode = String(inviteCode).trim();
+  let inviteId = rawInviteCode;
+  if (rawInviteCode.includes("/invite/")) {
+    inviteId = rawInviteCode.split("/invite/")[1] || "";
+  }
+
+  // Strip query/hash/trailing slashes if a full URL or link was provided.
+  inviteId = inviteId.split("?")[0].split("#")[0].split("/")[0].trim();
 
   if (!inviteId) {
     res.status(400).json({
@@ -421,16 +426,20 @@ export const joinWithInvite = async (
       return;
     }
     const { data: ban } = await supabase
-  .from('server_bans')
-  .select('user_id')
-  .eq('server_id', invite.serverId)
-  .eq('user_id', userId)
-  .maybeSingle();
+      .from('server_bans')
+      .select('user_id')
+      .eq('server_id', invite.server_id)
+      .eq('user_id', userId)
+      .maybeSingle();
 
-if (ban) {
-  res.status(200).json({ error: 'You are banned from this server' });
-  return;
-}
+    if (ban) {
+      res.status(403).json({
+        success: false,
+        code: "USER_BANNED",
+        message: "You are banned from this server."
+      });
+      return;
+    }
     const { data: existingMember } = await supabase
       .from("server_members")
       .select("user_id")
@@ -1002,14 +1011,6 @@ export const banMember = async (req: AuthenticatedRequest, res: Response): Promi
       .eq('id', serverId)
       .single();
 
-      await supabase.from('server_bans').insert({
-  server_id: serverId,
-  user_id: targetUserId,
-  banned_by: userId,
-  banned_at: new Date().toISOString()
-});
-
-
     if (serverError || !serverData) {
       res.status(404).json({ error: 'Server not found' });
       return;
@@ -1201,91 +1202,18 @@ export const getServerInvites = async (req: AuthenticatedRequest, res: Response)
       return;
     }
 
-    // Check if user is server owner or has admin role
-    const { data: serverData, error: serverError } = await supabase
-      .from('servers')
-      .select('owner_id')
-      .eq('id', serverId)
-      .single();
-
-    if (serverError) {
-      console.error('Error fetching server data:', serverError);
-      res.status(404).json({ error: 'Server not found' });
+    const { isOwner, isAdmin } = await checkOwnerOrAdmin(userId, serverId);
+    if (!isOwner && !isAdmin) {
+      res.status(403).json({ error: 'Only server owners and admins can view invites' });
       return;
     }
 
-    if (!serverData) {
-      console.error('No server data found for serverId:', serverId);
-      res.status(404).json({ error: 'Server not found' });
-      return;
-    }
-
-    console.log('Server data:', serverData);
-    console.log('User ID:', userId);
-    console.log('Owner ID:', serverData.owner_id);
-
-    const isOwner = serverData.owner_id === userId;
-    console.log('Is owner:', isOwner);
-    
-    let hasAdminRole = false;
-
-    if (!isOwner) {
-      console.log('Not owner, checking admin roles...');
-      // Check if user has admin role in the server
-      const { data: userRoles, error: rolesError } = await supabase
-        .from('user_roles')
-        .select(`
-          roles (
-            name,
-            permissions
-          )
-        `)
-        .eq('user_id', userId);
-
-      console.log('User roles query result:', { userRoles, rolesError });
-
-      if (!rolesError && userRoles) {
-        hasAdminRole = userRoles.some((ur: any) => 
-          ur.roles && (
-            ur.roles.name === 'Admin' || 
-            ur.roles.name === 'Owner' ||
-            (ur.roles.permissions && ur.roles.permissions.includes('Manage Server'))
-          )
-        );
-        console.log('Has admin role:', hasAdminRole);
-      }
-    }
-
-    if (!isOwner && !hasAdminRole) {
-      console.log('Access denied for user:', userId);
-      res.status(403).json({ error: 'Only server admins can view invites' });
-      return;
-    }
-
-    console.log('Permission granted, fetching invites for server:', serverId);
-
-    // First, let's try a simpler query to test if the table exists and is accessible
-    const { data: testQuery, error: testError } = await supabase
-      .from('invites')
-      .select('id')
-      .limit(1);
-
-    console.log('Test query to invites table:', { testQuery, testError });
-
-    if (testError) {
-      console.error('Basic invites table test failed:', testError);
-      res.status(500).json({ error: 'Database table access issue' });
-      return;
-    }
-
-    // Now try the full query with the correct columns
     const { data: invites, error: invitesError } = await supabase
       .from('invites')
-      .select('id, inviter_id, use_limit, expiry, people_joined, is_valid')
+      .select('id, inviter_id, use_limit, expiry, people_joined, is_valid, created_at')
       .eq('server_id', serverId)
-      .eq('is_valid', true);
-
-    console.log('Invites query result:', { invites, invitesError });
+      .eq('is_valid', true)
+      .order('created_at', { ascending: false });
 
     if (invitesError) {
       console.error('Error fetching server invites:', invitesError);
@@ -1293,8 +1221,7 @@ export const getServerInvites = async (req: AuthenticatedRequest, res: Response)
       return;
     }
 
-    console.log('Successfully fetched invites:', invites);
-    res.status(200).json(invites);
+    res.status(200).json(invites || []);
 
   } catch (error) {
     console.error('Error getting server invites:', error);
@@ -1313,20 +1240,9 @@ export const deleteInvite = async (req: AuthenticatedRequest, res: Response): Pr
       return;
     }
 
-    // Check if user has permission to delete invites
-    const { data: serverData, error: serverError } = await supabase
-      .from('servers')
-      .select('owner_id')
-      .eq('id', serverId)
-      .single();
-
-    if (serverError || !serverData) {
-      res.status(404).json({ error: 'Server not found' });
-      return;
-    }
-
-    if (serverData.owner_id !== userId) {
-      res.status(403).json({ error: 'Only server owner can delete invites' });
+    const { isOwner, isAdmin } = await checkOwnerOrAdmin(userId, serverId);
+    if (!isOwner && !isAdmin) {
+      res.status(403).json({ error: 'Only server owners and admins can revoke invites' });
       return;
     }
 
@@ -1357,73 +1273,16 @@ export const createServerInvite = async (req: AuthenticatedRequest, res: Respons
     const { expiresAfter, maxUses } = req.body;
     const userId = req.user?.sub; // Use 'sub' as this is what JWT contains
 
-    console.log('Creating invite for server:', serverId);
-    console.log('Request body:', { expiresAfter, maxUses });
-    console.log('User ID:', userId);
-
     if (!userId) {
       res.status(401).json({ error: 'Authentication required' });
       return;
     }
 
-    // Check if user is server owner or has admin role (same logic as getServerInvites)
-    const { data: serverData, error: serverError } = await supabase
-      .from('servers')
-      .select('owner_id')
-      .eq('id', serverId)
-      .single();
-
-    if (serverError) {
-      console.error('Error fetching server data:', serverError);
-      res.status(404).json({ error: 'Server not found' });
+    const { isOwner, isAdmin } = await checkOwnerOrAdmin(userId, serverId);
+    if (!isOwner && !isAdmin) {
+      res.status(403).json({ error: 'Only server owners and admins can create invites' });
       return;
     }
-
-    if (!serverData) {
-      console.error('No server data found for serverId:', serverId);
-      res.status(404).json({ error: 'Server not found' });
-      return;
-    }
-
-    const isOwner = serverData.owner_id === userId;
-    console.log('Is owner:', isOwner);
-    
-    let hasAdminRole = false;
-
-    if (!isOwner) {
-      console.log('Not owner, checking admin roles...');
-      // Check if user has admin role in the server
-      const { data: userRoles, error: rolesError } = await supabase
-        .from('user_roles')
-        .select(`
-          roles (
-            name,
-            permissions
-          )
-        `)
-        .eq('user_id', userId);
-
-      console.log('User roles query result:', { userRoles, rolesError });
-
-      if (!rolesError && userRoles) {
-        hasAdminRole = userRoles.some((ur: any) => 
-          ur.roles && (
-            ur.roles.name === 'Admin' || 
-            ur.roles.name === 'Owner' ||
-            (ur.roles.permissions && ur.roles.permissions.includes('Manage Server'))
-          )
-        );
-        console.log('Has admin role:', hasAdminRole);
-      }
-    }
-
-    if (!isOwner && !hasAdminRole) {
-      console.log('Access denied for user:', userId);
-      res.status(403).json({ error: 'Only server admins can create invites' });
-      return;
-    }
-
-    console.log('Permission granted, creating invite...');
 
     // Calculate expiry date
     let expiryDate = null;
@@ -1465,7 +1324,6 @@ export const createServerInvite = async (req: AuthenticatedRequest, res: Respons
 
     // Generate unique invite ID (UUID format for database)
     const inviteId = v4();
-    console.log('Generated invite ID:', inviteId);
 
     // Create invite record with the correct columns
     const inviteData = {
@@ -1478,15 +1336,11 @@ export const createServerInvite = async (req: AuthenticatedRequest, res: Respons
       is_valid: true
     };
 
-    console.log('Invite data to insert:', inviteData);
-
     const { data: newInvite, error: inviteError } = await supabase
       .from('invites')
       .insert(inviteData)
       .select()
       .single();
-
-    console.log('Insert result:', { newInvite, inviteError });
 
     if (inviteError) {
       console.error('Error creating invite:', inviteError);
@@ -1494,13 +1348,14 @@ export const createServerInvite = async (req: AuthenticatedRequest, res: Respons
       return;
     }
 
-    console.log('Invite created successfully:', newInvite);
+    const webBaseUrl = process.env.WEB_BASE_URL || req.get('origin') || '';
+    const inviteLink = webBaseUrl ? `${webBaseUrl}/invite/${inviteId}` : `/invite/${inviteId}`;
 
     res.status(201).json({
       message: 'Invite created successfully',
       invite: {
         ...newInvite,
-        inviteLink: `https://echo.ieeecsvit.com/invite/${inviteId}`
+        inviteLink
       }
     });
 

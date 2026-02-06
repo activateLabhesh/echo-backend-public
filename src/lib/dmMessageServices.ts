@@ -26,7 +26,14 @@ export const saveDMMessage = async (data: DMmessageData) => {
       // Use the provided media_url or default to null if it's not present
       media_url: data.media_url || null,
     })
-    .select()
+    .select(`
+      *,
+      sender:users!sender_id (
+        id,
+        username,
+        avatar_url
+      )
+    `) // JOIN users table to get sender info for real-time display
     .single();
 
   if (error) {
@@ -38,5 +45,12 @@ export const saveDMMessage = async (data: DMmessageData) => {
     console.log("media receved. ", data.media_url);
   }
 
-  return savedMessage;
+  // Flatten sender info for frontend consistency (matches REST API response structure)
+  const enrichedMessage = {
+    ...savedMessage,
+    username: savedMessage.sender?.username || null,
+    sender_avatar_url: savedMessage.sender?.avatar_url || null,
+  };
+
+  return enrichedMessage;
 };

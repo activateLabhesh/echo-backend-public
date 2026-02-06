@@ -159,35 +159,31 @@ export const respond_to_friend_request = async (req: AuthenticatedRequest, res: 
         }
 
         if (status === 'accepted') {
-            // Check if a DM thread already exists
-            const { data: thread } = await supabase
+            const u1 = request.user1_id
+            const u2 = request.user2_id
+
+            const [userA, userB] = u1 < u2 ? [u1, u2] : [u2, u1]
+
+            const { error } = await supabase
                 .from('dm_threads')
-                .select('id')
-                .or(`(user1_id.eq.${request.user1_id},user2_id.eq.${request.user2_id}),(user1_id.eq.${request.user2_id},user2_id.eq.${request.user1_id})`)
-                .maybeSingle();
+                .insert({
+                    user1_id: userA,
+                    user2_id: userB
+                })
 
-            if (!thread) {
-                // Create a new DM thread
-                const { error: threadCreationError } = await supabase
-                    .from('dm_threads')
-                    .insert({
-                        user1_id: request.user1_id,
-                        user2_id: request.user2_id,
-                    });
-
-                if (threadCreationError) {
-                    console.error("Error creating DM thread:", threadCreationError);
-                    // Not returning an error to the client as the friend request was still successful
-                }
+            // 23505 = unique violation → thread already exists (OK)
+            if (error && error.code !== '23505') {
+                console.error('Error creating DM thread:', error)
+                throw error
             }
         }
 
-        res.status(200).json({ message: `Friend request ${status}.` });
+                res.status(200).json({ message: `Friend request ${status}.` });
 
-    } catch (error) {
-        res.status(500).json({ message: "An unexpected error occurred." });
-    }
-};
+            } catch (error) {
+                res.status(500).json({ message: "An unexpected error occurred." });
+            }
+        };
 
 export const fetch_friends = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
     const userId = req.user?.sub;

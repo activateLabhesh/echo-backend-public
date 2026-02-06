@@ -29,7 +29,14 @@ export const saveMessage = async (data: MessageData) => {
       media_url: data.media_url || null, // Handle optional file URL
       is_edited: false,
     })
-    .select() // This tells Supabase to return the row we just created
+    .select(`
+      *,
+      sender:users!sender_id (
+        id,
+        username,
+        avatar_url
+      )
+    `) // JOIN users table to get sender info for real-time display
     .single(); // We expect just one row back
 
   if (error) {
@@ -37,7 +44,12 @@ export const saveMessage = async (data: MessageData) => {
     throw new Error('Could not save the message.'); // Throw an error if it fails
   }
 
-  // console.log('Message saved successfully:', savedMessage.id);
+  // Flatten sender info for frontend consistency (matches REST API response structure)
+  const enrichedMessage = {
+    ...savedMessage,
+    username: savedMessage.sender?.username || null,
+    sender_avatar_url: savedMessage.sender?.avatar_url || null,
+  };
 
   // Process mentions in the background
   try {
@@ -47,7 +59,7 @@ export const saveMessage = async (data: MessageData) => {
       const resolvedMentions = await resolveMentions(mentions, data.channel_id);
       if (resolvedMentions.length > 0) {
         await processMentions(
-          savedMessage.id,
+          enrichedMessage.id,
           data.channel_id,
           data.sender_id,
           data.content,
@@ -60,6 +72,6 @@ export const saveMessage = async (data: MessageData) => {
     // Don't fail the message save if mention processing fails
   }
 
-  // Return the complete message object from the database
-  return savedMessage;
+  // Return the enriched message object with sender info
+  return enrichedMessage;
 };

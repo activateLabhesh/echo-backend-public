@@ -72,27 +72,27 @@ export const setupChatSocket = (io: Server) => {
     });
 
 
-    socket.on('send_message', async (data: { channelId: string; senderId: string; content: string }) => {
+    socket.on('send_message', async (data: { channelId: string; senderId: string; content: string; tempId?: string }) => {
       // Use server-verified userId instead of client-provided senderId
       const verifiedSenderId = socket.data.userId;
       
       // 1. checking the coming data
       if (!data.channelId || !data.content) {
         console.error('Invalid chat message payload:', data);
-        socket.emit('message_error', 'Invalid message data.');
+        socket.emit('message_error', { error: 'Invalid message data.', tempId: data.tempId });
         return;
       }
       
       if (!verifiedSenderId) {
         console.error('No verified userId for socket:', socket.id);
-        socket.emit('message_error', 'Authentication required');
+        socket.emit('message_error', { error: 'Authentication required', tempId: data.tempId });
         return;
       }
 
       // 🔒 SECURITY: Verify the senderId matches the authenticated user (prevent impersonation)
       if (data.senderId !== verifiedSenderId) {
         console.error(`SECURITY: User ${verifiedSenderId} attempted to impersonate ${data.senderId}`);
-        socket.emit('message_error', 'Unauthorized: User ID mismatch.');
+        socket.emit('message_error', { error: 'Unauthorized: User ID mismatch.', tempId: data.tempId });
         return;
       }
 
@@ -101,7 +101,10 @@ export const setupChatSocket = (io: Server) => {
         const permissionCheck = await checkChannelSendPermission(verifiedSenderId, data.channelId);
         
         if (!permissionCheck.canSend) {
-          socket.emit('message_error', permissionCheck.error || 'You do not have permission to send messages in this channel.');
+          socket.emit('message_error', { 
+            error: permissionCheck.error || 'You do not have permission to send messages in this channel.',
+            tempId: data.tempId 
+          });
           return;
         }
 
@@ -114,40 +117,47 @@ export const setupChatSocket = (io: Server) => {
           sender_id: verifiedSenderId,
         });
 
-        // If successful, broadcast the complete message from the DB to everyone in the room
-        io.to(data.channelId).emit('new_message', savedMessage);
+        // Add tempId to the saved message for frontend matching
+        const messageWithTempId = { ...savedMessage, tempId: data.tempId };
+
+        // Send confirmation to sender ONLY (for optimistic UI update)
+        socket.emit('message_confirmed', messageWithTempId);
+
+        // Broadcast to everyone in the room EXCEPT the sender
+        // This prevents duplicate messages on the sender's UI
+        socket.to(data.channelId).emit('new_message', savedMessage);
 
       } catch (error) {
         // If an error occurs, log it and notify the sender
         console.error('Failed to save or broadcast message:', error);
-        socket.emit('message_error', 'Your message could not be sent.');
+        socket.emit('message_error', { error: 'Your message could not be sent.', tempId: data.tempId });
       }
     });
 
     // dm chat
     // This event should now only handle text-based DMs for performance.
-    socket.on("send_dm", async (dmPayload: { senderId: string; receiverId: string; message: string; mediaurl?: UrlObject }) => {
+    socket.on("send_dm", async (dmPayload: { senderId: string; receiverId: string; message: string; mediaurl?: UrlObject; tempId?: string }) => {
         // console.log('Received DM payload:', dmPayload);
         // Use server-verified userId instead of client-provided senderId
         const verifiedSenderId = socket.data.userId;
-        const { senderId, receiverId, message, mediaurl } = dmPayload;
+        const { senderId, receiverId, message, mediaurl, tempId } = dmPayload;
         
         if (!verifiedSenderId) {
             console.error("No verified userId for socket:", socket.id);
-            socket.emit("dm_error", "Authentication required");
+            socket.emit("dm_error", { error: "Authentication required", tempId });
             return;
         }
         
         if (!receiverId || !message) {
             console.error("Invalid DM payload:", dmPayload);
-            socket.emit("dm_error", "Your DM is missing required information.");
+            socket.emit("dm_error", { error: "Your DM is missing required information.", tempId });
             return;
         }
 
         // 🔒 SECURITY: Verify the senderId matches the authenticated user (prevent impersonation)
         if (senderId !== verifiedSenderId) {
             console.error(`SECURITY: User ${verifiedSenderId} attempted to impersonate ${senderId} in DM`);
-            socket.emit("dm_error", "Unauthorized: User ID mismatch.");
+            socket.emit("dm_error", { error: "Unauthorized: User ID mismatch.", tempId });
             return;
         }
 
@@ -201,21 +211,22 @@ export const setupChatSocket = (io: Server) => {
             // console.log('DM saved successfully:', savedDm);
 
             // STEP 4: Emit to the recipient (if online) and send confirmation to the sender.
-            // Use the clean, consistent data object from the database (`savedDm`).
+            // Include tempId for optimistic UI matching
+            const savedDmWithTempId = { ...savedDm, tempId };
+
+            // Send confirmation to sender for optimistic UI update
+            socket.emit("dm_confirmed", savedDmWithTempId);
+
+            // Send to recipient (if online)
             const receiverSocketId = userSocketMap.get(receiverId);
             if (receiverSocketId) {
                 // console.log(`Emitting DM to online receiver ${receiverId} at socket ${receiverSocketId}`);
                 io.to(receiverSocketId).emit("receive_dm", savedDm);
-            } else {
-                // console.log(`User ${receiverId} is offline. DM is stored.`);
             }
-
-            // Send confirmation back to the sender so their UI updates instantly.
-            socket.emit("dm_sent_confirmation");
 
         } catch (error) {
             console.error("Failed to process DM:", error);
-            socket.emit("dm_error", "Your DM could not be sent due to a server error.");
+            socket.emit("dm_error", { error: "Your DM could not be sent due to a server error.", tempId });
         }
     });
 
