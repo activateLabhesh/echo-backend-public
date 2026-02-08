@@ -5,6 +5,7 @@ import { saveDMMessage } from "../lib/dmMessageServices";
 import { supabase } from "../client/supabase";
 import { UrlObject } from "url";
 import { checkChannelSendPermission } from "../controllers/channelController";
+import { setUserSocket, getUserSocket, deleteUserSocket } from "../redis/userSocketStore";
 
 export const userSocketMap = new Map<string, string>(); // Map<userId, socketId>
 
@@ -24,11 +25,11 @@ export const getIO = (): Server => {
 
 export const setupChatSocket = (io: Server) => {
   io.on("connection", async (socket: Socket) => { 
-    // console.log(`Chat Socket: User connected - ${socket.id}`);
+    const token = socket.handshake.auth?.token;
+    const clientUserId = socket.handshake.auth?.userId; // Backward compatibility
 
-    const token = socket.handshake.auth.token;
-    const clientUserId = socket.handshake.auth.userId; // Backward compatibility
-    
+    console.log(`[chatSocket] Connection attempt: socket=${socket.id} hasToken=${!!token} hasUserId=${!!clientUserId}`);
+
     let userId: string | null = null;
     
     // Prefer token verification (new secure method)
@@ -36,25 +37,38 @@ export const setupChatSocket = (io: Server) => {
       try {
         const { data, error } = await supabase.auth.getUser(token);
         if (error || !data?.user?.id) {
-          console.warn(`Invalid token for socket ${socket.id}:`, error?.message);
-          socket.emit("auth_error", { code: "INVALID_TOKEN", message: "Invalid or expired token" });
+          console.warn(`[chatSocket] Invalid token for socket ${socket.id}:`, error?.message || "No user in token");
+          // DEBUG: Fall back to legacy userId if token fails (temporary - remove in production)
+          if (clientUserId) {
+            console.warn(`[chatSocket] Using legacy userId fallback for socket ${socket.id}`);
+            userId = clientUserId;
+          } else {
+            socket.emit("auth_error", { code: "INVALID_TOKEN", message: "Invalid or expired token" });
+            socket.disconnect();
+            return;
+          }
+        } else {
+          userId = data.user.id;
+          console.log(`[chatSocket] Socket ${socket.id} authenticated via token for user ${userId}`);
+        }
+      } catch (err: any) {
+        console.error(`[chatSocket] Token verification error for socket ${socket.id}:`, err?.message || err);
+        // DEBUG: Fall back to legacy userId if token verification throws (temporary)
+        if (clientUserId) {
+          console.warn(`[chatSocket] Using legacy userId fallback after token error for socket ${socket.id}`);
+          userId = clientUserId;
+        } else {
+          socket.emit("auth_error", { code: "AUTH_ERROR", message: "Authentication failed" });
           socket.disconnect();
           return;
         }
-        userId = data.user.id;
-        // console.log(`Socket ${socket.id} authenticated via token for user ${userId}`);
-      } catch (err) {
-        console.error(`Token verification error for socket ${socket.id}:`, err);
-        socket.emit("auth_error", { code: "AUTH_ERROR", message: "Authentication failed" });
-        socket.disconnect();
-        return;
       }
     } else if (clientUserId) {
       // Backward compatibility: trust userId from client (will be removed in future)
-      console.warn(`Socket ${socket.id} using legacy userId auth - migrate to token auth`);
+      console.warn(`[chatSocket] Socket ${socket.id} using legacy userId auth - migrate to token auth`);
       userId = clientUserId;
     } else {
-      console.warn(`No authentication provided for socket ${socket.id}`);
+      console.warn(`[chatSocket] No authentication provided for socket ${socket.id}`);
       socket.emit("auth_error", { code: "AUTH_REQUIRED", message: "Authentication required" });
       socket.disconnect();
       return;
@@ -63,7 +77,10 @@ export const setupChatSocket = (io: Server) => {
     // Store verified userId in socket data for use in handlers
     socket.data.userId = userId;
     userSocketMap.set(userId as string, socket.id);
-    // console.log(`User ${userId} registered with socket ${socket.id}`);
+    // Redis store for cross-instance DM delivery (app instance A, web instance B)
+    setUserSocket(userId as string, socket.id).catch((err) =>
+      console.error("[chatSocket] Failed to set userSocket in Redis:", err)
+    );
 
     // chat for channel 
     socket.on("join_room", (channelId: string) => {
@@ -137,7 +154,7 @@ export const setupChatSocket = (io: Server) => {
     // dm chat
     // This event should now only handle text-based DMs for performance.
     socket.on("send_dm", async (dmPayload: { senderId: string; receiverId: string; message: string; mediaurl?: UrlObject; tempId?: string }) => {
-        // console.log('Received DM payload:', dmPayload);
+        console.log('Received DM payload:', dmPayload);
         // Use server-verified userId instead of client-provided senderId
         const verifiedSenderId = socket.data.userId;
         const { senderId, receiverId, message, mediaurl, tempId } = dmPayload;
@@ -216,12 +233,17 @@ export const setupChatSocket = (io: Server) => {
 
             // Send confirmation to sender for optimistic UI update
             socket.emit("dm_confirmed", savedDmWithTempId);
-
-            // Send to recipient (if online)
-            const receiverSocketId = userSocketMap.get(receiverId);
+            console.log(`DM confirmed to sender ${verifiedSenderId} with tempId ${tempId}`);
+            // Send to recipient (if online) - check local map first, then Redis for cross-instance
+            let receiverSocketId = userSocketMap.get(receiverId);
+            if (!receiverSocketId) {
+                receiverSocketId = (await getUserSocket(receiverId)) || undefined;
+            }
             if (receiverSocketId) {
-                // console.log(`Emitting DM to online receiver ${receiverId} at socket ${receiverSocketId}`);
+                console.log(`[chatSocket] Emitting receive_dm to receiver ${receiverId} at socket ${receiverSocketId}`);
                 io.to(receiverSocketId).emit("receive_dm", savedDm);
+            } else {
+                console.warn(`[chatSocket] Receiver ${receiverId} not found (local or Redis) - cannot deliver receive_dm in real time`);
             }
 
         } catch (error) {
@@ -231,14 +253,13 @@ export const setupChatSocket = (io: Server) => {
     });
 
     socket.on("disconnect", () => {
-      for (const [key, value] of userSocketMap.entries()) {
-        if (value === socket.id) {
-          userSocketMap.delete(key);
-          // console.log(`User ${key} unregistered and disconnected.`);
-          break;
-        }
+      const uid = socket.data.userId as string | undefined;
+      if (uid) {
+        userSocketMap.delete(uid);
+        deleteUserSocket(uid).catch((err) =>
+          console.error("[chatSocket] Failed to delete userSocket from Redis:", err)
+        );
       }
-      // console.log(`Socket disconnected: ${socket.id}`);
     });
   });
 };

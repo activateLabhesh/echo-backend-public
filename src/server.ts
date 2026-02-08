@@ -38,7 +38,9 @@ subClient.connect();
 const allowedOrigins = process.env.FRONTEND_URL?.split(',').map(url => url.trim()) || [
   'http://localhost:3000',
   'https://echo-web-lemon.vercel.app',
-  'https://echo.ieeecsvit.com'
+  'https://echo.ieeecsvit.com',
+  'http://10.0.2.2:5000',
+  'http://192.168.1.7:8081'
 ];
 
 const io = new Server(httpServer, {
