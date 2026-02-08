@@ -3,6 +3,7 @@ import { supabase } from '../client/supabase';
 import { v4 } from 'uuid';
 import { AuthenticatedRequest } from "../middleware/authMiddleware";
 import { getIO, userSocketMap } from "../sockets/chatSocket";
+import { getUserSocket } from "../redis/userSocketStore";
 import { parseMentions, resolveMentions, processMentions } from '../lib/mentionParser';
 import { checkChannelSendPermission } from './channelController';
 
@@ -226,17 +227,17 @@ export const dmMessagePostController = async (req: AuthenticatedRequest, res: Re
         if (joinError) {
           console.error('Error fetching joined message for socket:', joinError);
         }
+        
         const io = getIO();
         io.to(savedMessage.channel_id).emit("new_message", fullMessage || savedMessage);
-
-        // 5. Broadcast via Sockets
-        const receiverSocketId = userSocketMap.get(receiver_id);
+        // 5. Broadcast via Sockets (check local map, then Redis for cross-instance)
+        let receiverSocketId = userSocketMap.get(receiver_id) ?? await getUserSocket(receiver_id);
         if (receiverSocketId) {
             io.to(receiverSocketId).emit("receive_dm", savedMessage);
         }
-        const senderSocketId = userSocketMap.get(sender_id);
+        let senderSocketId = userSocketMap.get(sender_id) ?? await getUserSocket(sender_id);
         if (senderSocketId) {
-            io.to(senderSocketId).emit("dm_sent_confirmation");
+            io.to(senderSocketId).emit("dm_confirmed", fullMessage || savedMessage);
         }
 
         return res.status(200).json({ message: savedMessage });

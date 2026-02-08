@@ -31,6 +31,10 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
   const authHeader = req.headers.authorization;
   if (authHeader?.startsWith("Bearer ")) {
     token = authHeader.split(" ")[1];
+  } else if (req.headers.authorization?.startsWith('Bearer ')) {
+    token = req.headers.authorization.split(' ')[1];
+  } else if (req.body && req.body.access_token) {
+    token = req.body.access_token;
   } else if (req.cookies?.access_token) {
     token = req.cookies.access_token;
   }
