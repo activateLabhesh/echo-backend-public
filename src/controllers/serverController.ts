@@ -5,6 +5,74 @@ import {v4} from 'uuid';
 import { RequestWithBusboy } from '../middleware/busboyMiddleware';
 import { checkOwnerOrAdmin } from './roleController';
 
+const normalizeRoleLabel = (value: unknown): string =>
+  (value || '').toString().trim().toLowerCase();
+
+const getServerRoleMeta = async (serverId: string): Promise<{
+  roleIds: string[];
+  ownerRoleId: string | null;
+  memberRoleId: string | null;
+  elevatedRoleIds: string[];
+}> => {
+  const { data: roles, error } = await supabase
+    .from('roles')
+    .select('id, role_type, name')
+    .eq('server_id', serverId);
+
+  if (error) {
+    throw error;
+  }
+
+  const roleIds: string[] = [];
+  const elevatedRoleIds = new Set<string>();
+  let ownerRoleId: string | null = null;
+  let memberRoleId: string | null = null;
+
+  for (const role of roles || []) {
+    roleIds.push(role.id);
+    const roleType = normalizeRoleLabel(role.role_type);
+    const roleName = normalizeRoleLabel(role.name);
+
+    if (!memberRoleId && (roleType === 'member' || roleName === 'member')) {
+      memberRoleId = role.id;
+    }
+
+    if (roleType === 'owner' || roleName === 'owner') {
+      ownerRoleId = role.id;
+      elevatedRoleIds.add(role.id);
+    }
+
+    if (roleType === 'admin' || roleName === 'admin') {
+      elevatedRoleIds.add(role.id);
+    }
+  }
+
+  return {
+    roleIds,
+    ownerRoleId,
+    memberRoleId,
+    elevatedRoleIds: [...elevatedRoleIds],
+  };
+};
+
+const removeUserRolesForServer = async (userId: string, serverId: string): Promise<void> => {
+  const { roleIds } = await getServerRoleMeta(serverId);
+
+  if (roleIds.length === 0) {
+    return;
+  }
+
+  const { error } = await supabase
+    .from('user_roles')
+    .delete()
+    .eq('user_id', userId)
+    .in('role_id', roleIds);
+
+  if (error) {
+    throw error;
+  }
+};
+
 export const screation = async (req: AuthenticatedRequest, res: Response): Promise<void>=> {
   const { name } = req.body;
   const user = req.user;
@@ -962,10 +1030,12 @@ export const kickMember = async (req: AuthenticatedRequest, res: Response): Prom
     }
 
     // remove from user_roles 
-    const { error: roleError } = await supabase
-      .from('user_roles')
-      .delete()
-      .eq('user_id', targetUserId);
+    let roleError: any = null;
+    try {
+      await removeUserRolesForServer(targetUserId, serverId);
+    } catch (error) {
+      roleError = error;
+    }
 
     if (roleError) {
       console.error('Error removing user roles:', roleError);
@@ -1067,10 +1137,12 @@ export const banMember = async (req: AuthenticatedRequest, res: Response): Promi
     }
 
     // Remove from user_roles (child table)
-    const { error: banRoleError } = await supabase
-      .from('user_roles')
-      .delete()
-      .eq('user_id', targetUserId);
+    let banRoleError: any = null;
+    try {
+      await removeUserRolesForServer(targetUserId, serverId);
+    } catch (error) {
+      banRoleError = error;
+    }
 
     if (banRoleError) {
       console.error('Error removing user roles during ban:', banRoleError);
@@ -1480,10 +1552,12 @@ export const addUserToServer = async (req: AuthenticatedRequest, res: Response):
 
     // SAFETY CHECK: Clean up any orphaned user_roles before adding
     // prevents duplicate key errors from incomplete previous removals
-    const { error: cleanupError } = await supabase
-      .from('user_roles')
-      .delete()
-      .eq('user_id', userData.id);
+    let cleanupError: any = null;
+    try {
+      await removeUserRolesForServer(userData.id, serverId);
+    } catch (error) {
+      cleanupError = error;
+    }
 
     if (cleanupError) {
       console.error('Error cleaning up orphaned user_roles:', cleanupError);
@@ -1579,6 +1653,8 @@ export const transferOwnership = async (req: AuthenticatedRequest, res: Response
       return;
     }
 
+    const previousOwnerId = serverData.owner_id;
+
     // Transfer ownership
     const { error: updateError } = await supabase
       .from('servers')
@@ -1590,10 +1666,70 @@ export const transferOwnership = async (req: AuthenticatedRequest, res: Response
       return;
     }
 
-    res.status(200).json({ 
+    let roleSyncWarning: string | null = null;
+
+    try {
+      const { ownerRoleId, memberRoleId, elevatedRoleIds } = await getServerRoleMeta(serverId);
+
+      if (elevatedRoleIds.length > 0) {
+        const { error: demoteError } = await supabase
+          .from('user_roles')
+          .delete()
+          .eq('user_id', previousOwnerId)
+          .in('role_id', elevatedRoleIds);
+
+        if (demoteError) {
+          throw demoteError;
+        }
+      }
+
+      if (memberRoleId) {
+        const { data: oldOwnerMemberRole } = await supabase
+          .from('user_roles')
+          .select('user_id')
+          .eq('user_id', previousOwnerId)
+          .eq('role_id', memberRoleId)
+          .maybeSingle();
+
+        if (!oldOwnerMemberRole) {
+          const { error: assignMemberError } = await supabase
+            .from('user_roles')
+            .insert({ user_id: previousOwnerId, role_id: memberRoleId });
+
+          if (assignMemberError) {
+            throw assignMemberError;
+          }
+        }
+      }
+
+      if (ownerRoleId) {
+        const { data: newOwnerHasOwnerRole } = await supabase
+          .from('user_roles')
+          .select('user_id')
+          .eq('user_id', newOwnerId)
+          .eq('role_id', ownerRoleId)
+          .maybeSingle();
+
+        if (!newOwnerHasOwnerRole) {
+          const { error: assignOwnerRoleError } = await supabase
+            .from('user_roles')
+            .insert({ user_id: newOwnerId, role_id: ownerRoleId });
+
+          if (assignOwnerRoleError) {
+            throw assignOwnerRoleError;
+          }
+        }
+      }
+    } catch (roleSyncError) {
+      console.error('Ownership transfer role sync warning:', roleSyncError);
+      roleSyncWarning = 'Ownership changed, but role sync was partially unsuccessful.';
+    }
+
+    res.status(200).json({
       message: `Server ownership transferred to ${userData.username}`,
       newOwnerId,
-      serverName: serverData.name
+      serverName: serverData.name,
+      roleSyncWarning,
     });
 
   } catch (error) {

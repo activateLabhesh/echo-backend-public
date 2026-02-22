@@ -35,7 +35,7 @@ const IMAGE_MIME_SET = new Set([
     'image/jpeg','image/png','image/gif','image/webp','image/bmp','image/svg+xml'
 ]);
 
-const ALLOWED_FILE_MIME: Record<string,string> = {
+const KNOWN_FILE_MIME_EXT: Record<string,string> = {
     // Images
     'image/jpeg':'jpg','image/png':'png','image/gif':'gif','image/webp':'webp','image/bmp':'bmp','image/svg+xml':'svg',
     // Text / docs
@@ -48,7 +48,19 @@ const ALLOWED_FILE_MIME: Record<string,string> = {
 };
 
 function extFromMime(mime: string): string | null {
-    return ALLOWED_FILE_MIME[mime] || null;
+    const knownExt = KNOWN_FILE_MIME_EXT[mime];
+    if (knownExt) return knownExt;
+
+    const subtype = mime.split('/')[1];
+    if (!subtype) return null;
+
+    const sanitizedSubtype = subtype
+        .split(';')[0]
+        .split('+')[0]
+        .toLowerCase()
+        .replace(/[^a-z0-9._-]/g, '');
+
+    return sanitizedSubtype || null;
 }
 function sniffImageMime(buffer: Buffer): { mime: string; ext: string } | null {
     // ... (Your existing sniffImageMime function content)
@@ -73,6 +85,75 @@ function sniffImageMime(buffer: Buffer): { mime: string; ext: string } | null {
     return null;
 }
 
+function getUploadedFiles(anyReq: any): Express.Multer.File[] {
+    const files: Express.Multer.File[] = [];
+
+    if (anyReq.file) {
+        files.push(anyReq.file as Express.Multer.File);
+    }
+
+    if (anyReq.files) {
+        if (Array.isArray(anyReq.files)) {
+            files.push(...(anyReq.files as Express.Multer.File[]));
+        } else {
+            const filesObj = anyReq.files as Record<string, Express.Multer.File[]>;
+            Object.values(filesObj).forEach((group) => {
+                if (Array.isArray(group) && group.length) {
+                    files.push(...group);
+                }
+            });
+        }
+    }
+
+    return files;
+}
+
+function serializeMediaUrls(urls: string[]): string | null {
+    if (!urls.length) return null;
+    if (urls.length === 1) return urls[0];
+    return JSON.stringify(urls);
+}
+
+function normalizeMediaUrls(mediaUrl: unknown): string[] {
+    if (typeof mediaUrl !== 'string') return [];
+
+    const trimmed = mediaUrl.trim();
+    if (!trimmed) return [];
+
+    if (trimmed.startsWith('[')) {
+        try {
+            const parsed = JSON.parse(trimmed);
+            if (Array.isArray(parsed)) {
+                return parsed.filter((item) => typeof item === 'string');
+            }
+        } catch {
+            return [trimmed];
+        }
+    }
+
+    return [trimmed];
+}
+
+function withMediaUrls<T extends { media_url?: unknown }>(message: T): T & { media_urls: string[] } {
+    return {
+        ...message,
+        media_urls: normalizeMediaUrls(message.media_url),
+    };
+}
+
+function getDmPreview(message?: { content?: unknown; media_urls?: unknown }): string {
+    if (!message) return '';
+
+    const content = typeof message.content === 'string' ? message.content.trim() : '';
+    if (content) return content;
+
+    if (Array.isArray(message.media_urls) && message.media_urls.length > 0) {
+        return '[Attachment]';
+    }
+
+    return '';
+}
+
 
 // --- CONTROLLERS ---
 
@@ -88,19 +169,16 @@ export const dmMessagePostController = async (req: AuthenticatedRequest, res: Re
 
         console.log("Starting dmMessagePostController");
 
-        let uploadedFile = anyReq.file as Express.Multer.File | undefined;
-        if (!uploadedFile && anyReq.files) {
-            // Multer fields style: { image?: [File], file?: [File] }
-            const filesObj = anyReq.files as Record<string, Express.Multer.File[]>;
-            if (filesObj.image && filesObj.image.length) uploadedFile = filesObj.image[0];
-            else if (filesObj.file && filesObj.file.length) uploadedFile = filesObj.file[0];
-        }
-        if (uploadedFile) {
-            console.log('[DM Upload] Received file', {
-                fieldname: uploadedFile.fieldname,
-                originalname: uploadedFile.originalname,
-                mimetype: uploadedFile.mimetype,
-                size: uploadedFile.size
+        const uploadedFiles = getUploadedFiles(anyReq);
+        if (uploadedFiles.length) {
+            console.log('[DM Upload] Received files', {
+                count: uploadedFiles.length,
+                files: uploadedFiles.map((file) => ({
+                    fieldname: file.fieldname,
+                    originalname: file.originalname,
+                    mimetype: file.mimetype,
+                    size: file.size,
+                })),
             });
         } else {
             console.log('[DM Upload] No file found on request');
@@ -113,7 +191,7 @@ export const dmMessagePostController = async (req: AuthenticatedRequest, res: Re
         if (!receiver_id) {
             return res.status(400).json({ error: "Invalid receiver_id format." });
         }
-        if (!content && !uploadedFile) {
+        if (!content && uploadedFiles.length === 0) {
             return res.status(400).json({ error: "Message content or a file is required." });
         }
 
@@ -154,28 +232,20 @@ export const dmMessagePostController = async (req: AuthenticatedRequest, res: Re
 
 
         // 3. Handle file upload
-        let media_url: string | null = null;
-        if (uploadedFile) {
+        const uploadedUrls: string[] = [];
+        for (const uploadedFile of uploadedFiles) {
             let contentType: string | undefined = uploadedFile.mimetype;
 
-            // Some environments may give empty or generic types; attempt sniff only if likely image
             if (!contentType || contentType === 'application/octet-stream') {
                 const sniff = sniffImageMime(uploadedFile.buffer);
-                if (sniff) contentType = sniff.mime; // sniff only handles images
+                if (sniff) contentType = sniff.mime;
             }
 
-            if (!contentType) {
-                return res.status(400).json({ msg: 'Could not determine file MIME type.' });
-            }
+            if (!contentType) contentType = 'application/octet-stream';
 
-            if (!extFromMime(contentType)) {
-                return res.status(415).json({ msg: 'Unsupported file type.' });
-            }
-
-            
             const fileId = v4();
             const fileExt = extFromMime(contentType) || (uploadedFile.originalname?.split('.').pop()?.toLowerCase() || 'bin');
-            const safeExt = fileExt.replace(/[^a-z0-9]/g,'');
+            const safeExt = fileExt.replace(/[^a-z0-9]/g, '');
             const fileName = `${fileId}.${safeExt}`;
 
             const { error: uploadError } = await supabase.storage
@@ -186,10 +256,12 @@ export const dmMessagePostController = async (req: AuthenticatedRequest, res: Re
                 console.error('Error uploading file:', uploadError);
                 return res.status(500).json({ error: 'Could not upload file.' });
             }
+
             const { data: publicUrlData } = supabase.storage.from('attachments').getPublicUrl(fileName);
-            media_url = publicUrlData.publicUrl;
-        
+            uploadedUrls.push(publicUrlData.publicUrl);
         }
+
+        const media_url = serializeMediaUrls(uploadedUrls);
         
 
         // 4. Insert the message
@@ -229,18 +301,19 @@ export const dmMessagePostController = async (req: AuthenticatedRequest, res: Re
         }
         
         const io = getIO();
-        io.to(savedMessage.channel_id).emit("new_message", fullMessage || savedMessage);
         // 5. Broadcast via Sockets (check local map, then Redis for cross-instance)
+        const socketMessage = withMediaUrls(fullMessage || savedMessage);
+
         let receiverSocketId = userSocketMap.get(receiver_id) ?? await getUserSocket(receiver_id);
         if (receiverSocketId) {
-            io.to(receiverSocketId).emit("receive_dm", savedMessage);
+            io.to(receiverSocketId).emit("receive_dm", socketMessage);
         }
         let senderSocketId = userSocketMap.get(sender_id) ?? await getUserSocket(sender_id);
         if (senderSocketId) {
-            io.to(senderSocketId).emit("dm_confirmed", fullMessage || savedMessage);
+            io.to(senderSocketId).emit("dm_confirmed", socketMessage);
         }
 
-        return res.status(200).json({ message: savedMessage });
+        return res.status(200).json({ message: withMediaUrls(savedMessage) });
     } catch (e: any) {
         console.error("Error in dmMessagePostController:", e);
         return res.status(500).json({ msg: 'Server Error' });
@@ -257,18 +330,16 @@ export const channelmessagePostController = async (req:AuthenticatedRequest, res
         const reply_to = body.reply_to || null;
         
         const anyReqCh = req as any;
-        let uploadedFile = anyReqCh.file as Express.Multer.File | undefined;
-        if (!uploadedFile && anyReqCh.files) {
-            const filesObj = anyReqCh.files as Record<string, Express.Multer.File[]>;
-            if (filesObj.image && filesObj.image.length) uploadedFile = filesObj.image[0];
-            else if (filesObj.file && filesObj.file.length) uploadedFile = filesObj.file[0];
-        }
-        if (uploadedFile) {
-            console.log('[Channel Upload] Received file', {
-                fieldname: uploadedFile.fieldname,
-                originalname: uploadedFile.originalname,
-                mimetype: uploadedFile.mimetype,
-                size: uploadedFile.size
+        const uploadedFiles = getUploadedFiles(anyReqCh);
+        if (uploadedFiles.length) {
+            console.log('[Channel Upload] Received files', {
+                count: uploadedFiles.length,
+                files: uploadedFiles.map((file) => ({
+                    fieldname: file.fieldname,
+                    originalname: file.originalname,
+                    mimetype: file.mimetype,
+                    size: file.size,
+                })),
             });
         } else {
             console.log('[Channel Upload] No file found on request');
@@ -280,7 +351,7 @@ export const channelmessagePostController = async (req:AuthenticatedRequest, res
         if (!channel_id ) {
             return res.status(400).json({ error: "Invalid channel_id format." });
         }
-        if (!content && !uploadedFile) {
+        if (!content && uploadedFiles.length === 0) {
             return res.status(400).json({ error: "Message content or a file is required." });
         }
 
@@ -292,24 +363,19 @@ export const channelmessagePostController = async (req:AuthenticatedRequest, res
             });
         }
 
-        let media_url:string | null = null;
+        const uploadedUrls: string[] = [];
         const id = v4();
 
-        if (uploadedFile) {
+        for (const uploadedFile of uploadedFiles) {
             let contentType: string | undefined = uploadedFile.mimetype;
             if (!contentType || contentType === 'application/octet-stream') {
                 const sniff = sniffImageMime(uploadedFile.buffer);
                 if (sniff) contentType = sniff.mime;
             }
-            if (!contentType) {
-                return res.status(400).json({ msg: 'Could not determine file MIME type.' });
-            }
-            if (!extFromMime(contentType)) {
-                return res.status(415).json({ msg: 'Unsupported file type.' });
-            }
-            const fileExt = extFromMime(contentType) || uploadedFile.originalname.split('.').pop() || 'bin';
-            const safeExt = fileExt.replace(/[^a-z0-9]/g,'');
-            const fileName = `${id}.${safeExt}`;
+            if (!contentType) contentType = 'application/octet-stream';
+            const fileExt = extFromMime(contentType) || uploadedFile.originalname?.split('.').pop()?.toLowerCase() || 'bin';
+            const safeExt = fileExt.replace(/[^a-z0-9]/g, '');
+            const fileName = `${v4()}.${safeExt}`;
 
             const { error: uploadError } = await supabase.storage
                 .from('attachments')
@@ -323,8 +389,10 @@ export const channelmessagePostController = async (req:AuthenticatedRequest, res
             }
 
             const { data: publicUrlData } = supabase.storage.from('attachments').getPublicUrl(fileName);
-            media_url = publicUrlData.publicUrl;
+            uploadedUrls.push(publicUrlData.publicUrl);
         }
+
+        const media_url = serializeMediaUrls(uploadedUrls);
 
         const { data: savedMessage, error: insertError } = await supabase
         .from("messages")
@@ -391,10 +459,12 @@ export const channelmessagePostController = async (req:AuthenticatedRequest, res
           sender_avatar_url: fullMessage.sender?.avatar_url || null,
         } : savedMessage;
 
+        const payloadMessage = withMediaUrls(enrichedMessage);
+
         const io = getIO();
-        io.to(channel_id).emit("new_message", enrichedMessage);
+        io.to(channel_id).emit("new_message", payloadMessage);
         
-        return res.status(200).json(enrichedMessage);
+        return res.status(200).json(payloadMessage);
 
     } catch(error:any) {
         console.error(error);
@@ -449,6 +519,7 @@ export const messageGetController = async (req:Request, res:Response):Promise<an
             ...msg,
             username: msg.sender?.username || null,
             sender_avatar_url: msg.sender?.avatar_url || null,
+            media_urls: normalizeMediaUrls(msg.media_url),
             // Keep sender object for compatibility but flatten the useful fields
         }));
 
@@ -510,6 +581,7 @@ export const getDmThreadMessages = async (req: Request, res: Response): Promise<
             ...msg,
             username: msg.sender?.username || null,
             sender_avatar_url: msg.sender?.avatar_url || null,
+            media_urls: normalizeMediaUrls(msg.media_url),
         }));
 
         return res.status(200).json({
@@ -524,14 +596,19 @@ export const getDmThreadMessages = async (req: Request, res: Response): Promise<
 
 export const getDmMessages = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
     try {
-        const user_id = req.params.userId
-        const offset = parseInt(req.query?.offset as string, 10) || 0
+        const user_id = req.user?.sub
         const pageSize = 15
 
         console.log("Starting getDmMessages");
 
-        if (!user_id) {
-            res.status(400).json({ error: 'Invalid user_id parameter.' })
+        if (!user_id || typeof user_id !== 'string') {
+            res.status(401).json({ error: 'Unauthorized user context.' })
+            return
+        }
+
+        const requestedUserId = req.params.userId
+        if (requestedUserId && requestedUserId !== user_id) {
+            res.status(403).json({ error: 'User mismatch in request path.' })
             return
         }
 
@@ -594,7 +671,6 @@ export const getDmMessages = async (req: AuthenticatedRequest, res: Response): P
             .select('*')
             .in('thread_id', threadIds)
             .order('timestamp', { ascending: false })
-            .range(offset,offset+pageSize-1)
     
 
         // console.log(messages);
@@ -615,7 +691,10 @@ export const getDmMessages = async (req: AuthenticatedRequest, res: Response): P
             const otherUserId =
                 thread.user1_id === user_id ? thread.user2_id : thread.user1_id
             const otherUser = usersMap.get(otherUserId) || null
-            const msgs = messagesByThread.get(thread.id) || []
+            const msgs = (messagesByThread.get(thread.id) || []).map((msg) => ({
+                ...msg,
+                media_urls: normalizeMediaUrls(msg.media_url),
+            }))
 
             const lastReadAt = readStatusMap.get(thread.id)
 
@@ -640,14 +719,16 @@ export const getDmMessages = async (req: AuthenticatedRequest, res: Response): P
         })
             const latestTimestamp =
                 msgs.length > 0 ? msgs[0].timestamp : new Date(0).toISOString()
+            const latestMessagePreview = getDmPreview(msgs[0])
 
             return {
                 thread_id: thread.id,
-                messages: msgs.slice(0, 15),
+                messages: msgs.slice(0, pageSize),
                 other_user: otherUser,
                 unread_count: unreadCountMap.get(thread.id) || 0,
                 recipient_id: otherUserId,
-                latest_message_timestamp: latestTimestamp
+                latest_message_timestamp: latestTimestamp,
+                latest_message_preview: latestMessagePreview
             }
         })
 
@@ -667,10 +748,17 @@ export const getDmMessages = async (req: AuthenticatedRequest, res: Response): P
 // Get unread message counts per thread
 export const getUnreadCounts = async (req: Request, res: Response): Promise<void> => {
     try {
-        const user_id = req.params.userId;
+        const authReq = req as AuthenticatedRequest;
+        const user_id = authReq.user?.sub;
 
         if (!user_id || typeof user_id !== 'string') {
-            res.status(400).json({ error: 'Invalid user_id parameter.' });
+            res.status(401).json({ error: 'Unauthorized user context.' });
+            return;
+        }
+
+        const requestedUserId = req.params.userId;
+        if (requestedUserId && requestedUserId !== user_id) {
+            res.status(403).json({ error: 'User mismatch in request path.' });
             return;
         }
 
@@ -772,11 +860,12 @@ export const getUnreadCounts = async (req: Request, res: Response): Promise<void
 // Mark messages in a thread as read
 export const markThreadAsRead = async (req: Request, res: Response): Promise<void> => {
     try {
+        const authReq = req as AuthenticatedRequest;
         const { threadId } = req.params;
-        const { userId } = req.body;
+        const userId = authReq.user?.sub;
 
         if (!threadId || !userId) {
-            res.status(400).json({ error: 'Thread ID and user ID are required.' });
+            res.status(400).json({ error: 'Thread ID and authenticated user are required.' });
             return;
         }
 

@@ -4,7 +4,6 @@ dotenv.config();
 import express, { Request, Response } from 'express';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
-import { Server } from 'socket.io';
 import http from 'http';
 
 import authRoutes from './routes/auth';
@@ -16,14 +15,18 @@ import roleroutes from './routes/roles';
 import contactroutes from "./routes/contact";
 import friendroutes from "./routes/friend";
 import mentionRoutes from "./routes/mentions";
-import { createAdapter } from '@socket.io/redis-adapter';
 import { createClient } from 'redis';
 
 import { rateLimiter } from './middleware/rateLimiter';
+
+//Socket imports
+import { Server } from 'socket.io';
+import { createAdapter } from '@socket.io/redis-adapter';
 import { setupChatSocket } from './sockets/chatSocket';
 import { subscribeToChannel } from './redis/sub';
 import { setupVoiceSocket } from './sockets/voiceSocket';
 import {setIO} from "./sockets/chatSocket";
+
 
 const app = express();
 const httpServer = http.createServer(app);

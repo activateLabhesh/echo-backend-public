@@ -7,7 +7,7 @@ const ACCESS_TOKEN_MAX_AGE = 60 * 60; // 1 hour in seconds
 const REFRESH_TOKEN_MAX_AGE = 60 * 60 * 24 * 30; // 30 days in seconds
 
 // Frontend URL for redirects (configurable via env)
-const FRONTEND_URL = process.env.FRONTEND_URL?.split(',')[0]?.trim() || 'https://echo.ieeecsvit.com';
+const FRONTEND_URL = process.env.FRONTEND_URL?.split(',')[0]?.trim();
 
 const cookieOptions = {
   httpOnly: true,
@@ -549,5 +549,244 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
   } catch (err: any) {
     console.error('OAuth handler error:', err);
     res.status(500).json({ message: 'Server error during OAuth login' });
+  }
+};
+
+
+
+export const handleGoogleOAuth = async (req: Request, res: Response): Promise<void> => {
+  const isMobileApp = req.headers['x-client-type'] === 'Mobile';
+  const idToken: string | undefined = req.body?.idToken || req.body?.googleIdToken;
+
+  const USER_FIELDS = 'id, email, username, fullname, avatar_url, bio, date_of_birth, status, created_at';
+
+  if (!idToken) {
+    res.status(400).json({ message: 'Google ID token required' });
+    return;
+  }
+
+  try {
+    // 1. Decode Google ID token to extract user info
+    const parts = idToken.split('.');
+    if (parts.length !== 3) {
+      res.status(400).json({ message: 'Invalid Google ID token format' });
+      return;
+    }
+
+    const decoded = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf-8'));
+    const { email, sub: googleId, name, picture } = decoded;
+
+    if (!email || !googleId) {
+      res.status(400).json({ message: 'Invalid Google token: missing email or id' });
+      return;
+    }
+
+    console.log(`Google OAuth: Processing ${email}`);
+
+    // 2. Find or create user in Supabase Auth
+    let supabaseUser: any;
+    let isNewSupabaseUser = false;
+
+    const { data: usersList } = await supabaseAdmin.auth.admin.listUsers();
+    const existingAuthUser = usersList?.users?.find((u: any) => u.email === email);
+
+    if (!existingAuthUser) {
+      const { data: newAuthUser, error: createError } = await supabaseAdmin.auth.admin.createUser({
+        email,
+        email_confirm: true,
+        user_metadata: {
+          full_name: name || email.split('@')[0],
+          avatar_url: picture || null,
+          provider: 'google',
+          provider_id: googleId,
+        },
+      });
+
+      if (createError || !newAuthUser?.user) {
+        console.error('Error creating Supabase Auth user:', createError);
+        res.status(500).json({ message: 'Failed to create authentication user', details: createError?.message });
+        return;
+      }
+
+      supabaseUser = newAuthUser.user;
+      isNewSupabaseUser = true;
+    } else {
+      supabaseUser = existingAuthUser;
+
+      // Update avatar if changed
+      if (picture && supabaseUser.user_metadata?.avatar_url !== picture) {
+        await supabaseAdmin.auth.admin.updateUserById(supabaseUser.id, {
+          user_metadata: {
+            ...supabaseUser.user_metadata,
+            avatar_url: picture,
+            full_name: name || supabaseUser.user_metadata?.full_name,
+          },
+        });
+      }
+    }
+
+    // 3. Generate Supabase session via Admin generateLink + verifyOtp
+    //    This bypasses the nonce requirement that breaks iOS Google Sign-In
+    const { data: linkData, error: linkError } = await supabaseAdmin.auth.admin.generateLink({
+      type: 'magiclink',
+      email,
+    });
+
+    if (linkError || !linkData) {
+      console.error('Error generating magic link:', linkError);
+      res.status(500).json({ message: 'Failed to generate session', details: linkError?.message });
+      return;
+    }
+
+    const props = linkData.properties as any;
+    const emailOtp: string | undefined = props?.email_otp;
+    const hashedToken: string | undefined = props?.hashed_token;
+
+    let sessionData: any = null;
+    let sessionError: any = null;
+
+    if (emailOtp) {
+      const result = await supabase.auth.verifyOtp({ type: 'email', email, token: emailOtp });
+      sessionData = result.data;
+      sessionError = result.error;
+    } else if (hashedToken) {
+      const result = await supabase.auth.verifyOtp({ type: 'magiclink', token_hash: hashedToken } as any);
+      sessionData = result.data;
+      sessionError = result.error;
+    } else {
+      const actionLink = props?.action_link || '';
+      const tokenMatch = actionLink.match(/[?&]token=([^&]+)/);
+      const urlToken = tokenMatch ? decodeURIComponent(tokenMatch[1]) : null;
+
+      if (urlToken) {
+        const result = await supabase.auth.verifyOtp({ type: 'magiclink', token_hash: urlToken } as any);
+        sessionData = result.data;
+        sessionError = result.error;
+      } else {
+        res.status(500).json({ message: 'Failed to extract session token' });
+        return;
+      }
+    }
+
+    if (sessionError || !sessionData?.session) {
+      console.error('Error creating session via verifyOtp:', sessionError);
+      res.status(500).json({ message: 'Failed to create session', details: sessionError?.message });
+      return;
+    }
+
+    const { access_token, refresh_token, expires_in } = sessionData.session;
+
+    // 4. Find or create user in 'users' table (using Supabase Auth UUID)
+    let { data: existingUser, error: fetchError } = await supabaseAdmin
+      .from('users')
+      .select(USER_FIELDS)
+      .eq('id', supabaseUser.id)
+      .maybeSingle();
+
+    if (fetchError) console.error('Error fetching user by ID:', fetchError);
+
+    // If not found by ID, try linking by email (user may exist from email/password signup)
+    if (!existingUser && supabaseUser.email) {
+      const { data: emailUser, error: emailError } = await supabaseAdmin
+        .from('users')
+        .select(USER_FIELDS)
+        .eq('email', supabaseUser.email)
+        .maybeSingle();
+
+      if (emailError) console.error('Error fetching user by email:', emailError);
+
+      if (emailUser) {
+        const { error: updateError } = await supabaseAdmin
+          .from('users')
+          .update({ id: supabaseUser.id })
+          .eq('email', supabaseUser.email);
+
+        if (updateError) {
+          console.error('Error linking OAuth account:', updateError);
+          existingUser = emailUser;
+        } else {
+          const { data: updatedUser } = await supabaseAdmin
+            .from('users')
+            .select(USER_FIELDS)
+            .eq('id', supabaseUser.id)
+            .maybeSingle();
+          existingUser = updatedUser || emailUser;
+        }
+      }
+    }
+
+    let userDetails = existingUser;
+    const isNewUser = !existingUser;
+
+    if (!existingUser) {
+      // Create new user in 'users' table
+      let username =
+        supabaseUser.user_metadata?.full_name?.replace(/\s+/g, '_').toLowerCase() ||
+        supabaseUser.email?.split('@')[0] ||
+        `user_${Date.now()}`;
+
+      const { data: usernameCheck } = await supabaseAdmin
+        .from('users')
+        .select('id')
+        .eq('username', username)
+        .maybeSingle();
+
+      if (usernameCheck) username = `${username}_${Math.floor(Math.random() * 9999)}`;
+
+      const newUser = {
+        id: supabaseUser.id,
+        email: supabaseUser.email,
+        username,
+        fullname: supabaseUser.user_metadata?.full_name || '',
+        avatar_url: supabaseUser.user_metadata?.avatar_url || null,
+        status: 'offline',
+        bio: '',
+        date_of_birth: null,
+      };
+
+      const { error: insertError } = await supabaseAdmin.from('users').insert([newUser]);
+      if (insertError) {
+        console.error('Error creating Google OAuth user:', insertError);
+        res.status(500).json({ message: 'Failed to create user record', details: insertError.message });
+        return;
+      }
+
+      const { data: newUserData } = await supabaseAdmin
+        .from('users')
+        .select(USER_FIELDS)
+        .eq('id', supabaseUser.id)
+        .maybeSingle();
+
+      userDetails = newUserData;
+    } else if (!existingUser.avatar_url && supabaseUser.user_metadata?.avatar_url) {
+      // Update avatar if user doesn't have one yet
+      await supabaseAdmin
+        .from('users')
+        .update({ avatar_url: supabaseUser.user_metadata.avatar_url })
+        .eq('id', supabaseUser.id);
+      userDetails = { ...existingUser, avatar_url: supabaseUser.user_metadata.avatar_url };
+    }
+
+    // 5. Return response
+    const responseBody = {
+      message: 'Google OAuth successful',
+      user: userDetails,
+      accessToken: access_token,
+      refreshToken: refresh_token,
+      expiresIn: expires_in,
+      isNewUser,
+    };
+
+    if (!isMobileApp) {
+      res.cookie('access_token', access_token, cookieOptions);
+      if (refresh_token) {
+        res.cookie('refresh_token', refresh_token, { ...cookieOptions, maxAge: REFRESH_TOKEN_MAX_AGE });
+      }
+    }
+
+    res.status(200).json(responseBody);
+  } catch (err: any) {
+    console.error('Google OAuth handler error:', err);
+    res.status(500).json({ message: 'Server error during Google OAuth' });
   }
 };

@@ -1,5 +1,5 @@
 import { Response } from 'express';
-import { supabase } from '../client/supabase';
+import { supabaseAdmin } from '../client/supabase';
 import { AuthenticatedRequest } from '../middleware/authMiddleware';
 import { RequestWithBusboy } from '../middleware/busboyMiddleware';
 import { v4 as uuidv4 } from 'uuid';
@@ -21,14 +21,14 @@ export const updateProfile = async (req: AuthenticatedRequest, res: Response): P
         res.status(400).json({ message: 'Invalid file type. Only images are allowed.' });
         return;
       }
-      const MAX_SIZE_IN_BYTES = 5 * 1024 * 1024; // 5MB
+      const MAX_SIZE_IN_BYTES = 50 * 1024 * 1024; // 5MB
       if (avatarFile.size > MAX_SIZE_IN_BYTES) {
         res.status(400).json({ message: 'File is too large. Maximum size is 5MB.' });
         return;
       }
     }
 
-    const { data: currentUser, error: fetchError } = await supabase
+    const { data: currentUser, error: fetchError } = await supabaseAdmin
       .from('users')
       .select('avatar_url')
       .eq('id', userId)
@@ -37,7 +37,7 @@ export const updateProfile = async (req: AuthenticatedRequest, res: Response): P
     if (fetchError) throw fetchError;
 
     if (username !== undefined) {
-      const { data: existingUser, error: checkError } = await supabase
+      const { data: existingUser, error: checkError } = await supabaseAdmin
         .from('users')
         .select('id')
         .eq('username', username)
@@ -52,7 +52,7 @@ export const updateProfile = async (req: AuthenticatedRequest, res: Response): P
       }
       updateData.username = username;
     }
-  
+    
     if (bio !== undefined) updateData.bio = bio;
     if (fullname !== undefined) updateData.fullname = fullname;
 
@@ -61,7 +61,7 @@ export const updateProfile = async (req: AuthenticatedRequest, res: Response): P
       const ext = path.extname(avatarFile.originalname);
       const fileName = `${uuidv4()}${ext}`;
 
-      const { error: uploadError } = await supabase.storage
+      const { error: uploadError } = await supabaseAdmin.storage
         .from('avatars')
         .upload(fileName, avatarFile.buffer, {
           contentType: avatarFile.mimetype,
@@ -70,13 +70,13 @@ export const updateProfile = async (req: AuthenticatedRequest, res: Response): P
 
       if (uploadError) throw uploadError;
 
-      const { data: publicUrlData } = supabase.storage.from('avatars').getPublicUrl(fileName);
+      const { data: publicUrlData } = supabaseAdmin.storage.from('avatars').getPublicUrl(fileName);
       updateData.avatar_url = publicUrlData.publicUrl;
 
       if (oldAvatarUrl) {
         const oldFileName = oldAvatarUrl.split('/').pop();
         if (oldFileName) {
-          await supabase.storage.from('avatars').remove([oldFileName]);
+          await supabaseAdmin.storage.from('avatars').remove([oldFileName]);
         }
       }
     }
@@ -86,7 +86,7 @@ export const updateProfile = async (req: AuthenticatedRequest, res: Response): P
       return;
     }
 
-    const { data: updatedUser, error: updateError } = await supabase
+    const { data: updatedUser, error: updateError } = await supabaseAdmin
       .from('users')
       .update(updateData)
       .eq('id', userId)
@@ -120,7 +120,7 @@ export const updateStatus = async (req: AuthenticatedRequest, res: Response): Pr
     return 
   }
 
-  const { error } = await supabase
+  const { error } = await supabaseAdmin
     .from('users')
     .update({ status })
     .eq('id', userId)
@@ -141,7 +141,7 @@ export const getProfile = async(req: AuthenticatedRequest, res: Response): Promi
 
   const userId = req.user.sub;
   try {
-    const { data: userDetails, error: fetchError } = await supabase
+    const { data: userDetails, error: fetchError } = await supabaseAdmin
       .from('users')
       .select('id, email, username, fullname, avatar_url, bio, date_of_birth, status, created_at')
       .eq('id', userId)
@@ -180,7 +180,7 @@ export const getUserProfileById = async(req: AuthenticatedRequest, res: Response
   }
 
   try {
-    const { data: userDetails, error: fetchError } = await supabase
+    const { data: userDetails, error: fetchError } = await supabaseAdmin
       .from('users')
       .select('id, username, fullname, avatar_url, bio, status, created_at')
       .eq('id', userId)
@@ -221,7 +221,7 @@ export const deleteProfile = async (req: AuthenticatedRequest, res: Response): P
   }
 
   try {
-    const {error : authError} = await supabase.auth.signInWithPassword({
+    const {error : authError} = await supabaseAdmin.auth.signInWithPassword({
       email: userEmail || '',
       password: password
     });
@@ -232,7 +232,7 @@ export const deleteProfile = async (req: AuthenticatedRequest, res: Response): P
     }
 
     //if password is correct, proceed to delete the user profile
-    const { error: deleteError } = await supabase
+    const { error: deleteError } = await supabaseAdmin
       .from('users')
       .delete()
       .eq('id', userId);
@@ -260,7 +260,7 @@ export const removeAvatar = async (req: AuthenticatedRequest, res: Response): Pr
   const userId = req.user.sub;
 
   try {
-    const { data: currentUser, error: fetchError } = await supabase
+    const { data: currentUser, error: fetchError } = await supabaseAdmin
       .from('users')
       .select('avatar_url')
       .eq('id', userId)
@@ -286,7 +286,7 @@ export const removeAvatar = async (req: AuthenticatedRequest, res: Response): Pr
 
     if (oldFileName) {
       console.log('Removing avatar file:', oldFileName);
-      const { error: removeError } = await supabase.storage.from('avatars').remove([oldFileName]);
+      const { error: removeError } = await supabaseAdmin.storage.from('avatars').remove([oldFileName]);
       if (removeError) {
         console.error('Error deleting avatar:', removeError.message);
         res.status(500).json({ message: 'Failed to delete avatar file from storage.' });
@@ -295,7 +295,7 @@ export const removeAvatar = async (req: AuthenticatedRequest, res: Response): Pr
     }
 
     // update the user's avatar_url to null if storage deletion is successful
-    const { error: updateError } = await supabase
+    const { error: updateError } = await supabaseAdmin
       .from('users')
       .update({ avatar_url: null })
       .eq('id', userId);

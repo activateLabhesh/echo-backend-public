@@ -3,7 +3,13 @@ const router = express.Router();
 
 import multer from 'multer';
 const storage = multer.memoryStorage();
-const upload = multer({ storage }); 
+const upload = multer({
+  storage,
+  limits: {
+    fileSize: 10 * 1024 * 1024,
+    files: 12,
+  },
+}); 
 
 import { authenticate } from '../middleware/authMiddleware';
 import { channelmessagePostController, messageGetController, getDmMessages, dmMessagePostController, getDmThreadMessages, getUnreadCounts, markThreadAsRead} from "../controllers/messageController";

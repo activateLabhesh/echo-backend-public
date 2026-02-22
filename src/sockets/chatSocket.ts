@@ -3,7 +3,6 @@ import { Server, Socket } from "socket.io";
 import { saveMessage } from "../lib/messageServices";
 import { saveDMMessage } from "../lib/dmMessageServices";
 import { supabase } from "../client/supabase";
-import { UrlObject } from "url";
 import { checkChannelSendPermission } from "../controllers/channelController";
 import { setUserSocket, getUserSocket, deleteUserSocket } from "../redis/userSocketStore";
 
@@ -152,12 +151,18 @@ export const setupChatSocket = (io: Server) => {
     });
 
     // dm chat
-    // This event should now only handle text-based DMs for performance.
-    socket.on("send_dm", async (dmPayload: { senderId: string; receiverId: string; message: string; mediaurl?: UrlObject; tempId?: string }) => {
+    socket.on("send_dm", async (dmPayload: {
+      senderId: string;
+      receiverId: string;
+      message?: string;
+      media_url?: string | null;
+      media_urls?: string[];
+      tempId?: string;
+    }) => {
         console.log('Received DM payload:', dmPayload);
         // Use server-verified userId instead of client-provided senderId
         const verifiedSenderId = socket.data.userId;
-        const { senderId, receiverId, message, mediaurl, tempId } = dmPayload;
+        const { senderId, receiverId, message, media_url, media_urls, tempId } = dmPayload;
         
         if (!verifiedSenderId) {
             console.error("No verified userId for socket:", socket.id);
@@ -165,7 +170,13 @@ export const setupChatSocket = (io: Server) => {
             return;
         }
         
-        if (!receiverId || !message) {
+        const normalizedMessage = (message || '').trim();
+        const normalizedMediaUrls = [
+          ...(Array.isArray(media_urls) ? media_urls : []),
+          ...(typeof media_url === 'string' && media_url.trim() ? [media_url.trim()] : []),
+        ].filter((item) => typeof item === 'string' && item.trim().length > 0);
+
+        if (!receiverId || (!normalizedMessage && normalizedMediaUrls.length === 0)) {
             console.error("Invalid DM payload:", dmPayload);
             socket.emit("dm_error", { error: "Your DM is missing required information.", tempId });
             return;
@@ -218,8 +229,12 @@ export const setupChatSocket = (io: Server) => {
             const extendedDmPayload = {
               senderId: verifiedSenderId,
               receiverId,
-              message,
-              mediaurl,
+              message: normalizedMessage,
+              media_url: normalizedMediaUrls.length === 0
+                ? null
+                : normalizedMediaUrls.length === 1
+                  ? normalizedMediaUrls[0]
+                  : JSON.stringify(normalizedMediaUrls),
               threadId: threadId 
             };
             // console.log('Saving DM message with payload:', extendedDmPayload);
@@ -263,3 +278,4 @@ export const setupChatSocket = (io: Server) => {
     });
   });
 };
+

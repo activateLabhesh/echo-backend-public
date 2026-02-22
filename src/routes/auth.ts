@@ -1,5 +1,5 @@
 import express from 'express';
-import {register,login, sendResetPasswordEmail,updatePassword,refreshToken, logout,testRoute, changePassword, authorize, handleOAuthUser } from '../controllers/authController';
+import {register,login, handleGoogleOAuth,sendResetPasswordEmail,updatePassword,refreshToken, logout,testRoute, changePassword, authorize, handleOAuthUser } from '../controllers/authController';
 
 const router = express.Router();
 
@@ -12,6 +12,7 @@ router.post('/forgot-password', sendResetPasswordEmail);
 router.post('/reset-password', updatePassword);
 router.post('/change-password', changePassword);
 router.get('/authorize', authorize);
+router.post('/google-oauth', handleGoogleOAuth);
 router.post('/oauth-user', handleOAuthUser);
 
 export default router;

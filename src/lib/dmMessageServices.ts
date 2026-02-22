@@ -9,6 +9,26 @@ export interface DMmessageData {
   media_url?: string | null;
 }
 
+const normalizeMediaUrls = (mediaUrl: unknown): string[] => {
+  if (typeof mediaUrl !== 'string') return [];
+
+  const trimmed = mediaUrl.trim();
+  if (!trimmed) return [];
+
+  if (trimmed.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        return parsed.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+      }
+    } catch {
+      return [trimmed];
+    }
+  }
+
+  return [trimmed];
+};
+
 /**
  * Saves a direct message to the database using a pre-existing thread_id.
  * @param data - The message data including the thread_id, sender, and content.
@@ -50,6 +70,7 @@ export const saveDMMessage = async (data: DMmessageData) => {
     ...savedMessage,
     username: savedMessage.sender?.username || null,
     sender_avatar_url: savedMessage.sender?.avatar_url || null,
+    media_urls: normalizeMediaUrls(savedMessage.media_url),
   };
 
   return enrichedMessage;
