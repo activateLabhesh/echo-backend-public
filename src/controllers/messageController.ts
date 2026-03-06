@@ -1,15 +1,15 @@
 import { Request, Response } from "express";
-import { supabase } from '../client/supabase';
 import { v4 } from 'uuid';
+import { supabase } from '../client/supabase';
+import { parseMentions, processMentions, resolveMentions } from '../lib/mentionParser';
+import { sendChannelPushNotification, sendDmPushNotification } from '../lib/pushNotificationService';
 import { AuthenticatedRequest } from "../middleware/authMiddleware";
-import { getIO, userSocketMap } from "../sockets/chatSocket";
 import { getUserSocket } from "../redis/userSocketStore";
-import { parseMentions, resolveMentions, processMentions } from '../lib/mentionParser';
+import { getIO, userSocketMap } from "../sockets/chatSocket";
 import { checkChannelSendPermission } from './channelController';
 
 // --- Required for file uploads ---
 // Make sure you have `multer` installed in your project.
-import multer from 'multer';
 
 // --- Type Definitions ---
 type DmMessageBody = {
@@ -32,19 +32,19 @@ type ChannelMessageBody = {
 // These functions are good and will be kept as-is.
 // --- MIME / Extension helpers ---
 const IMAGE_MIME_SET = new Set([
-    'image/jpeg','image/png','image/gif','image/webp','image/bmp','image/svg+xml'
+    'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp', 'image/svg+xml'
 ]);
 
-const KNOWN_FILE_MIME_EXT: Record<string,string> = {
+const KNOWN_FILE_MIME_EXT: Record<string, string> = {
     // Images
-    'image/jpeg':'jpg','image/png':'png','image/gif':'gif','image/webp':'webp','image/bmp':'bmp','image/svg+xml':'svg',
+    'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp', 'image/bmp': 'bmp', 'image/svg+xml': 'svg',
     // Text / docs
-    'text/plain':'txt','application/pdf':'pdf','application/msword':'doc','application/vnd.openxmlformats-officedocument.wordprocessingml.document':'docx',
-    'application/vnd.ms-excel':'xls','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':'xlsx',
-    'application/vnd.ms-powerpoint':'ppt','application/vnd.openxmlformats-officedocument.presentationml.presentation':'pptx',
-    'application/json':'json',
+    'text/plain': 'txt', 'application/pdf': 'pdf', 'application/msword': 'doc', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+    'application/vnd.ms-excel': 'xls', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+    'application/vnd.ms-powerpoint': 'ppt', 'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx',
+    'application/json': 'json',
     // Archives (optional - comment out if not desired)
-    'application/zip':'zip','application/x-zip-compressed':'zip',
+    'application/zip': 'zip', 'application/x-zip-compressed': 'zip',
 };
 
 function extFromMime(mime: string): string | null {
@@ -185,7 +185,7 @@ export const dmMessagePostController = async (req: AuthenticatedRequest, res: Re
         }
 
         // 1. Validate required fields and UUID format
-        if (!sender_id ) {
+        if (!sender_id) {
             return res.status(400).json({ error: "Invalid sender_id format." });
         }
         if (!receiver_id) {
@@ -197,37 +197,37 @@ export const dmMessagePostController = async (req: AuthenticatedRequest, res: Re
 
         // 2. Find or create DM thread
         const [user1_id, user2_id] =
-        sender_id < receiver_id
-            ? [sender_id, receiver_id]
-            : [receiver_id, sender_id];
+            sender_id < receiver_id
+                ? [sender_id, receiver_id]
+                : [receiver_id, sender_id];
 
         let threadId: string;
 
         const { data, error } = await supabase
-        .from('dm_threads')
-        .insert({ user1_id, user2_id })
-        .select('id')
-        .maybeSingle();
+            .from('dm_threads')
+            .insert({ user1_id, user2_id })
+            .select('id')
+            .maybeSingle();
 
         if (error && error.code === '23505') {
-        // Thread already exists → fetch it
-        const { data: existing } = await supabase
-            .from('dm_threads')
-            .select('id')
-            .eq('user1_id', user1_id)
-            .eq('user2_id', user2_id)
-            .single();
+            // Thread already exists → fetch it
+            const { data: existing } = await supabase
+                .from('dm_threads')
+                .select('id')
+                .eq('user1_id', user1_id)
+                .eq('user2_id', user2_id)
+                .single();
 
-        if (!existing) {
-            return res.status(500).json({error: 'Thread exists but could not be fetched.'});
-        }
+            if (!existing) {
+                return res.status(500).json({ error: 'Thread exists but could not be fetched.' });
+            }
 
-        threadId = existing.id;
+            threadId = existing.id;
         } else if (error) {
-        console.error('Error creating DM thread:', error);
-        return res.status(500).json({ error: 'Could not create DM thread.' });
+            console.error('Error creating DM thread:', error);
+            return res.status(500).json({ error: 'Could not create DM thread.' });
         } else {
-        threadId = data!.id;
+            threadId = data!.id;
         }
 
 
@@ -262,7 +262,7 @@ export const dmMessagePostController = async (req: AuthenticatedRequest, res: Re
         }
 
         const media_url = serializeMediaUrls(uploadedUrls);
-        
+
 
         // 4. Insert the message
         const newMessagePayload = {
@@ -287,19 +287,19 @@ export const dmMessagePostController = async (req: AuthenticatedRequest, res: Re
 
         // Fetch the full message with reply_to_message join for socket emit
         const { data: fullMessage, error: joinError } = await supabase
-          .from('dm_messages')
-          .select(`
+            .from('dm_messages')
+            .select(`
             *,
             reply_to_message:reply_to (
               id, content, sender_id, users (username, avatar_url)
             )
           `)
-          .eq('id', savedMessage.id)
-          .single();
+            .eq('id', savedMessage.id)
+            .single();
         if (joinError) {
-          console.error('Error fetching joined message for socket:', joinError);
+            console.error('Error fetching joined message for socket:', joinError);
         }
-        
+
         const io = getIO();
         // 5. Broadcast via Sockets (check local map, then Redis for cross-instance)
         const socketMessage = withMediaUrls(fullMessage || savedMessage);
@@ -313,6 +313,9 @@ export const dmMessagePostController = async (req: AuthenticatedRequest, res: Re
             io.to(senderSocketId).emit("dm_confirmed", socketMessage);
         }
 
+        // Fire-and-forget: push notification for DM
+        sendDmPushNotification(sender_id, receiver_id, content || '').catch(console.error);
+
         return res.status(200).json({ message: withMediaUrls(savedMessage) });
     } catch (e: any) {
         console.error("Error in dmMessagePostController:", e);
@@ -321,14 +324,14 @@ export const dmMessagePostController = async (req: AuthenticatedRequest, res: Re
 };
 
 
-export const channelmessagePostController = async (req:AuthenticatedRequest, res:Response):Promise<any> => {
+export const channelmessagePostController = async (req: AuthenticatedRequest, res: Response): Promise<any> => {
     try {
         const body = req.body as ChannelMessageBody;
         const sender_id = req.user?.sub || body.sender_id;
         const channel_id = body.channel_id as string;
         const content = body?.content ?? "";
         const reply_to = body.reply_to || null;
-        
+
         const anyReqCh = req as any;
         const uploadedFiles = getUploadedFiles(anyReqCh);
         if (uploadedFiles.length) {
@@ -345,10 +348,10 @@ export const channelmessagePostController = async (req:AuthenticatedRequest, res
             console.log('[Channel Upload] No file found on request');
         }
 
-        if (!sender_id ) {
+        if (!sender_id) {
             return res.status(400).json({ error: "Invalid sender_id format." });
         }
-        if (!channel_id ) {
+        if (!channel_id) {
             return res.status(400).json({ error: "Invalid channel_id format." });
         }
         if (!content && uploadedFiles.length === 0) {
@@ -358,8 +361,8 @@ export const channelmessagePostController = async (req:AuthenticatedRequest, res
         // **NEW: Check channel send permissions**
         const permissionCheck = await checkChannelSendPermission(sender_id, channel_id);
         if (!permissionCheck.canSend) {
-            return res.status(403).json({ 
-                error: permissionCheck.error || 'You do not have permission to send messages in this channel' 
+            return res.status(403).json({
+                error: permissionCheck.error || 'You do not have permission to send messages in this channel'
             });
         }
 
@@ -385,7 +388,7 @@ export const channelmessagePostController = async (req:AuthenticatedRequest, res
                 });
             if (uploadError) {
                 console.error(uploadError);
-                return res.status(500).json({'error':'Server error during file upload'});
+                return res.status(500).json({ 'error': 'Server error during file upload' });
             }
 
             const { data: publicUrlData } = supabase.storage.from('attachments').getPublicUrl(fileName);
@@ -395,30 +398,30 @@ export const channelmessagePostController = async (req:AuthenticatedRequest, res
         const media_url = serializeMediaUrls(uploadedUrls);
 
         const { data: savedMessage, error: insertError } = await supabase
-        .from("messages")
-        .insert({
-            id,
-            channel_id,
-            sender_id,
-            content,
-            media_url,
-            reply_to // <-- ensure reply_to is stored
-        })
-        .select()
-        .single();
-        if(insertError){
+            .from("messages")
+            .insert({
+                id,
+                channel_id,
+                sender_id,
+                content,
+                media_url,
+                reply_to // <-- ensure reply_to is stored
+            })
+            .select()
+            .single();
+        if (insertError) {
             console.error(insertError);
-            return res.status(500).json({error:'Server error during message save'});
+            return res.status(500).json({ error: 'Server error during message save' });
         }
 
         // Handle mentions if content exists
         if (content) {
             const parsedMentions = parseMentions(content);
-            
+
             if (parsedMentions.mentions.length > 0) {
                 // First resolve mentions (convert usernames to user IDs)
                 const resolvedMentions = await resolveMentions(parsedMentions.mentions, channel_id);
-                
+
                 if (resolvedMentions.length > 0) {
                     // Then process mentions (store in DB and send notifications)
                     await processMentions(
@@ -434,8 +437,8 @@ export const channelmessagePostController = async (req:AuthenticatedRequest, res
 
         // Fetch the full message with sender and reply_to_message join for socket emit
         const { data: fullMessage, error: joinError } = await supabase
-          .from('messages')
-          .select(`
+            .from('messages')
+            .select(`
             *,
             sender:users!sender_id (
               id,
@@ -446,46 +449,49 @@ export const channelmessagePostController = async (req:AuthenticatedRequest, res
               id, content, sender_id, users (username, avatar_url)
             )
           `)
-          .eq('id', id)
-          .single();
+            .eq('id', id)
+            .single();
         if (joinError) {
-          console.error('Error fetching joined message for socket:', joinError);
+            console.error('Error fetching joined message for socket:', joinError);
         }
 
         // Flatten sender info for frontend consistency
         const enrichedMessage = fullMessage ? {
-          ...fullMessage,
-          username: fullMessage.sender?.username || null,
-          sender_avatar_url: fullMessage.sender?.avatar_url || null,
+            ...fullMessage,
+            username: fullMessage.sender?.username || null,
+            sender_avatar_url: fullMessage.sender?.avatar_url || null,
         } : savedMessage;
 
         const payloadMessage = withMediaUrls(enrichedMessage);
 
         const io = getIO();
         io.to(channel_id).emit("new_message", payloadMessage);
-        
+
+        // Fire-and-forget: push notification for channel message
+        sendChannelPushNotification(sender_id, channel_id, content || '').catch(console.error);
+
         return res.status(200).json(payloadMessage);
 
-    } catch(error:any) {
+    } catch (error: any) {
         console.error(error);
-        return res.status(500).json({error:'Server error'});
+        return res.status(500).json({ error: 'Server error' });
     }
 };
 
-export const messageGetController = async (req:Request, res:Response):Promise<any>=>{
-    try{
-        const channel_id  = req.query?.channel_id as string;
+export const messageGetController = async (req: Request, res: Response): Promise<any> => {
+    try {
+        const channel_id = req.query?.channel_id as string;
         const offset = parseInt(req.query?.offset as string, 10) || 0;
         const pageSize = 15;
 
-        if(!channel_id ){
-            return res.status(400).json({msg:'Invalid channelId received'});
+        if (!channel_id) {
+            return res.status(400).json({ msg: 'Invalid channelId received' });
         }
 
         // OPTIMIZED: Single query with JOINs - no separate COUNT or user lookup queries
         const { data, error } = await supabase
-          .from('messages')
-          .select(`
+            .from('messages')
+            .select(`
             *,
             sender:users!sender_id (
               id,
@@ -499,18 +505,18 @@ export const messageGetController = async (req:Request, res:Response):Promise<an
               users (username, avatar_url)
             )
           `)
-          .eq('channel_id', channel_id)
-          .order('timestamp', { ascending: false })
-          .range(offset, offset + pageSize); // Fetch pageSize + 1 to check hasMore
+            .eq('channel_id', channel_id)
+            .order('timestamp', { ascending: false })
+            .range(offset, offset + pageSize); // Fetch pageSize + 1 to check hasMore
 
-        if(error){
+        if (error) {
             console.error('Error fetching messages:', error);
-            return res.status(500).json({msg:'Server Error'});
+            return res.status(500).json({ msg: 'Server Error' });
         }
 
         // Determine hasMore by checking if we got more than pageSize results
         const hasMore = data ? data.length > pageSize : false;
-        
+
         // Trim to actual page size
         const pageData = data ? data.slice(0, pageSize) : [];
 
@@ -529,16 +535,16 @@ export const messageGetController = async (req:Request, res:Response):Promise<an
             // Removed totalCount - not needed for infinite scroll
         });
     }
-    catch(e:any){
+    catch (e: any) {
         console.log(`Error in GET message : ${e}`);
-        return res.status(500).json({'msg':'Server Error'});
+        return res.status(500).json({ 'msg': 'Server Error' });
     }
 }
 
 interface DmThread {
     id: string;
-    user1_id:string;
-    user2_id:string;
+    user1_id: string;
+    user2_id: string;
 }
 
 export const getDmThreadMessages = async (req: Request, res: Response): Promise<any> => {
@@ -575,7 +581,7 @@ export const getDmThreadMessages = async (req: Request, res: Response): Promise<
 
         // Determine hasMore by checking if we got more than pageSize results
         const hasMore = data ? data.length > pageSize : false;
-        
+
         // Trim to actual page size and flatten sender info
         const pageData = (data || []).slice(0, pageSize).map((msg: any) => ({
             ...msg,
@@ -656,22 +662,22 @@ export const getDmMessages = async (req: AuthenticatedRequest, res: Response): P
 
         const readStatusMap = new Map<string, string>()
         readStatuses?.forEach(r => readStatusMap.set(r.thread_id, r.last_read_at))
-        
-        console.log("Fetching the Dms for: ",user_id,threadIds);
+
+        console.log("Fetching the Dms for: ", user_id, threadIds);
 
         const { data: messages } = await supabase        // const seenPairs = new Map<string, DmThread>()
-        // threads.forEach(thread => {
-        //     const otherUserId =
-        //         thread.user1_id === user_id ? thread.user2_id : thread.user1_id
-        //     if (!seenPairs.has(otherUserId)) {
-        //         seenPairs.set(otherUserId, thread)
-        //     }req.user?.sub
-        // })
+            // threads.forEach(thread => {
+            //     const otherUserId =
+            //         thread.user1_id === user_id ? thread.user2_id : thread.user1_id
+            //     if (!seenPairs.has(otherUserId)) {
+            //         seenPairs.set(otherUserId, thread)
+            //     }req.user?.sub
+            // })
             .from('dm_messages')
             .select('*')
             .in('thread_id', threadIds)
             .order('timestamp', { ascending: false })
-    
+
 
         // console.log(messages);
 
@@ -684,9 +690,9 @@ export const getDmMessages = async (req: AuthenticatedRequest, res: Response): P
             counter = counter + 1;
             messagesByThread.set(msg.thread_id, arr)
         })
-        
+
         console.log(counter);
-        
+
         const groupedThreads = userthreads.map(thread => {
             const otherUserId =
                 thread.user1_id === user_id ? thread.user2_id : thread.user1_id
@@ -698,25 +704,25 @@ export const getDmMessages = async (req: AuthenticatedRequest, res: Response): P
 
             const lastReadAt = readStatusMap.get(thread.id)
 
-            const unreadCountMap = new Map<String,number>()
+            const unreadCountMap = new Map<String, number>()
 
             readStatuses?.forEach(rs => {
                 unreadCountMap.set(rs.thread_id, 0)
             })
 
-            messages?.forEach(m=>{
+            messages?.forEach(m => {
                 const lastReadAt = readStatusMap.get(m.thread_id)
-                if(
-                    m.sender_id !== user_id &&  
-                    (!lastReadAt || new Date(m.timestamp) > new Date(lastReadAt)) 
+                if (
+                    m.sender_id !== user_id &&
+                    (!lastReadAt || new Date(m.timestamp) > new Date(lastReadAt))
                 ) {
-            
+
                     unreadCountMap.set(
-                        m.thread_id,(unreadCountMap.get(m.thread_id) || 0) + 1
+                        m.thread_id, (unreadCountMap.get(m.thread_id) || 0) + 1
                     )
 
                 }
-        })
+            })
             const latestTimestamp =
                 msgs.length > 0 ? msgs[0].timestamp : new Date(0).toISOString()
             const latestMessagePreview = getDmPreview(msgs[0])
@@ -785,7 +791,7 @@ export const getUnreadCounts = async (req: Request, res: Response): Promise<void
             const otherUserId = thread.user1_id === user_id ? thread.user2_id : thread.user1_id;
             if (!seenPairs.has(otherUserId)) {
                 seenPairs.set(otherUserId, thread)
-                ;
+                    ;
             }
         });
         const uniqueThreads = Array.from(seenPairs.values());
@@ -835,21 +841,21 @@ export const getUnreadCounts = async (req: Request, res: Response): Promise<void
             const lastReadAt = readStatusMap.get(thread.id);
             const threadMessages = messages?.filter(m => {
                 if (m.thread_id !== thread.id) return false;
-                
+
                 // If no read status, all messages are unread
                 if (!lastReadAt) return true;
-                
+
                 // Message is unread if timestamp is after last_read_at
                 return new Date(m.timestamp) > new Date(lastReadAt);
             }) || [];
-            
+
             unreadCounts[thread.id] = threadMessages.length;
             totalUnread += threadMessages.length;
         });
 
-        res.status(200).json({ 
+        res.status(200).json({
             unreadCounts,
-            totalUnread 
+            totalUnread
         });
     } catch (err) {
         console.error('Error in getUnreadCounts:', err);

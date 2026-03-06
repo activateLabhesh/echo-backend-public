@@ -1,10 +1,11 @@
 
 import { Server, Socket } from "socket.io";
-import { saveMessage } from "../lib/messageServices";
-import { saveDMMessage } from "../lib/dmMessageServices";
 import { supabase } from "../client/supabase";
 import { checkChannelSendPermission } from "../controllers/channelController";
-import { setUserSocket, getUserSocket, deleteUserSocket } from "../redis/userSocketStore";
+import { saveDMMessage } from "../lib/dmMessageServices";
+import { saveMessage } from "../lib/messageServices";
+import { sendChannelPushNotification, sendDmPushNotification } from "../lib/pushNotificationService";
+import { deleteUserSocket, getUserSocket, setUserSocket } from "../redis/userSocketStore";
 
 export const userSocketMap = new Map<string, string>(); // Map<userId, socketId>
 
@@ -23,14 +24,14 @@ export const getIO = (): Server => {
 };
 
 export const setupChatSocket = (io: Server) => {
-  io.on("connection", async (socket: Socket) => { 
+  io.on("connection", async (socket: Socket) => {
     const token = socket.handshake.auth?.token;
     const clientUserId = socket.handshake.auth?.userId; // Backward compatibility
 
     console.log(`[chatSocket] Connection attempt: socket=${socket.id} hasToken=${!!token} hasUserId=${!!clientUserId}`);
 
     let userId: string | null = null;
-    
+
     // Prefer token verification (new secure method)
     if (token) {
       try {
@@ -72,7 +73,7 @@ export const setupChatSocket = (io: Server) => {
       socket.disconnect();
       return;
     }
-    
+
     // Store verified userId in socket data for use in handlers
     socket.data.userId = userId;
     userSocketMap.set(userId as string, socket.id);
@@ -91,14 +92,14 @@ export const setupChatSocket = (io: Server) => {
     socket.on('send_message', async (data: { channelId: string; senderId: string; content: string; tempId?: string }) => {
       // Use server-verified userId instead of client-provided senderId
       const verifiedSenderId = socket.data.userId;
-      
+
       // 1. checking the coming data
       if (!data.channelId || !data.content) {
         console.error('Invalid chat message payload:', data);
         socket.emit('message_error', { error: 'Invalid message data.', tempId: data.tempId });
         return;
       }
-      
+
       if (!verifiedSenderId) {
         console.error('No verified userId for socket:', socket.id);
         socket.emit('message_error', { error: 'Authentication required', tempId: data.tempId });
@@ -115,11 +116,11 @@ export const setupChatSocket = (io: Server) => {
       try {
         // 🔒 SECURITY: Check if user has permission to send messages in this channel
         const permissionCheck = await checkChannelSendPermission(verifiedSenderId, data.channelId);
-        
+
         if (!permissionCheck.canSend) {
-          socket.emit('message_error', { 
+          socket.emit('message_error', {
             error: permissionCheck.error || 'You do not have permission to send messages in this channel.',
-            tempId: data.tempId 
+            tempId: data.tempId
           });
           return;
         }
@@ -143,6 +144,9 @@ export const setupChatSocket = (io: Server) => {
         // This prevents duplicate messages on the sender's UI
         socket.to(data.channelId).emit('new_message', savedMessage);
 
+        // Fire-and-forget: push notification to offline channel members
+        sendChannelPushNotification(verifiedSenderId, data.channelId, data.content).catch(console.error);
+
       } catch (error) {
         // If an error occurs, log it and notify the sender
         console.error('Failed to save or broadcast message:', error);
@@ -159,112 +163,115 @@ export const setupChatSocket = (io: Server) => {
       media_urls?: string[];
       tempId?: string;
     }) => {
-        console.log('Received DM payload:', dmPayload);
-        // Use server-verified userId instead of client-provided senderId
-        const verifiedSenderId = socket.data.userId;
-        const { senderId, receiverId, message, media_url, media_urls, tempId } = dmPayload;
-        
-        if (!verifiedSenderId) {
-            console.error("No verified userId for socket:", socket.id);
-            socket.emit("dm_error", { error: "Authentication required", tempId });
-            return;
+      console.log('Received DM payload:', dmPayload);
+      // Use server-verified userId instead of client-provided senderId
+      const verifiedSenderId = socket.data.userId;
+      const { senderId, receiverId, message, media_url, media_urls, tempId } = dmPayload;
+
+      if (!verifiedSenderId) {
+        console.error("No verified userId for socket:", socket.id);
+        socket.emit("dm_error", { error: "Authentication required", tempId });
+        return;
+      }
+
+      const normalizedMessage = (message || '').trim();
+      const normalizedMediaUrls = [
+        ...(Array.isArray(media_urls) ? media_urls : []),
+        ...(typeof media_url === 'string' && media_url.trim() ? [media_url.trim()] : []),
+      ].filter((item) => typeof item === 'string' && item.trim().length > 0);
+
+      if (!receiverId || (!normalizedMessage && normalizedMediaUrls.length === 0)) {
+        console.error("Invalid DM payload:", dmPayload);
+        socket.emit("dm_error", { error: "Your DM is missing required information.", tempId });
+        return;
+      }
+
+      // 🔒 SECURITY: Verify the senderId matches the authenticated user (prevent impersonation)
+      if (senderId !== verifiedSenderId) {
+        console.error(`SECURITY: User ${verifiedSenderId} attempted to impersonate ${senderId} in DM`);
+        socket.emit("dm_error", { error: "Unauthorized: User ID mismatch.", tempId });
+        return;
+      }
+
+      try {
+        // STEP 1: Correctly find or create the thread ID using persistent User IDs.
+        // console.log(`Processing DM from ${verifiedSenderId} to ${receiverId}`);
+        let threadId: string;
+
+        // Sort the actual user IDs to ensure the thread is always found regardless of who sent the first message.
+        const [user1_id, user2_id] = [verifiedSenderId, receiverId].sort();
+
+        const { data: existingThread } = await supabase
+          .from('dm_threads')
+          .select('id')
+          .eq('user1_id', user1_id)
+          .eq('user2_id', user2_id)
+          .maybeSingle();
+
+        // STEP 2: Handle both existing and new threads.
+        if (existingThread) {
+          threadId = existingThread.id;
+          // console.log(`Found existing DM thread ${threadId} for users ${user1_id} and ${user2_id}`);
+        } else {
+          // If the thread doesn't exist, create it.
+          // console.log(`Creating new DM thread for users ${user1_id} and ${user2_id}`);
+          const { data: newThread, error: newThreadError } = await supabase
+            .from('dm_threads')
+            .insert({ user1_id, user2_id })
+            .select('id')
+            .single();
+
+          if (newThreadError) {
+            throw newThreadError;
+          }
+          threadId = newThread.id;
+          // console.log(`Created new DM thread ${threadId}`);
         }
-        
-        const normalizedMessage = (message || '').trim();
-        const normalizedMediaUrls = [
-          ...(Array.isArray(media_urls) ? media_urls : []),
-          ...(typeof media_url === 'string' && media_url.trim() ? [media_url.trim()] : []),
-        ].filter((item) => typeof item === 'string' && item.trim().length > 0);
 
-        if (!receiverId || (!normalizedMessage && normalizedMediaUrls.length === 0)) {
-            console.error("Invalid DM payload:", dmPayload);
-            socket.emit("dm_error", { error: "Your DM is missing required information.", tempId });
-            return;
+        // STEP 3: Save the message using the determined threadId.
+        // Use verified senderId for security
+        const extendedDmPayload = {
+          senderId: verifiedSenderId,
+          receiverId,
+          message: normalizedMessage,
+          media_url: normalizedMediaUrls.length === 0
+            ? null
+            : normalizedMediaUrls.length === 1
+              ? normalizedMediaUrls[0]
+              : JSON.stringify(normalizedMediaUrls),
+          threadId: threadId
+        };
+        // console.log('Saving DM message with payload:', extendedDmPayload);
+
+        const savedDm = await saveDMMessage(extendedDmPayload);
+        // console.log('DM saved successfully:', savedDm);
+
+        // STEP 4: Emit to the recipient (if online) and send confirmation to the sender.
+        // Include tempId for optimistic UI matching
+        const savedDmWithTempId = { ...savedDm, tempId };
+
+        // Send confirmation to sender for optimistic UI update
+        socket.emit("dm_confirmed", savedDmWithTempId);
+        console.log(`DM confirmed to sender ${verifiedSenderId} with tempId ${tempId}`);
+        // Send to recipient (if online) - check local map first, then Redis for cross-instance
+        let receiverSocketId = userSocketMap.get(receiverId);
+        if (!receiverSocketId) {
+          receiverSocketId = (await getUserSocket(receiverId)) || undefined;
+        }
+        if (receiverSocketId) {
+          console.log(`[chatSocket] Emitting receive_dm to receiver ${receiverId} at socket ${receiverSocketId}`);
+          io.to(receiverSocketId).emit("receive_dm", savedDm);
+        } else {
+          console.warn(`[chatSocket] Receiver ${receiverId} not found (local or Redis) - cannot deliver receive_dm in real time`);
         }
 
-        // 🔒 SECURITY: Verify the senderId matches the authenticated user (prevent impersonation)
-        if (senderId !== verifiedSenderId) {
-            console.error(`SECURITY: User ${verifiedSenderId} attempted to impersonate ${senderId} in DM`);
-            socket.emit("dm_error", { error: "Unauthorized: User ID mismatch.", tempId });
-            return;
-        }
+        // Fire-and-forget: push notification (app may be backgrounded even if socket exists)
+        sendDmPushNotification(verifiedSenderId, receiverId, normalizedMessage).catch(console.error);
 
-        try {
-            // STEP 1: Correctly find or create the thread ID using persistent User IDs.
-            // console.log(`Processing DM from ${verifiedSenderId} to ${receiverId}`);
-            let threadId: string;
-            
-            // Sort the actual user IDs to ensure the thread is always found regardless of who sent the first message.
-            const [user1_id, user2_id] = [verifiedSenderId, receiverId].sort();
-
-            const { data: existingThread } = await supabase
-              .from('dm_threads')
-              .select('id')
-              .eq('user1_id', user1_id)
-              .eq('user2_id', user2_id)
-              .maybeSingle();
-            
-            // STEP 2: Handle both existing and new threads.
-            if (existingThread) {
-                threadId = existingThread.id;
-                // console.log(`Found existing DM thread ${threadId} for users ${user1_id} and ${user2_id}`);
-            } else {
-                // If the thread doesn't exist, create it.
-                // console.log(`Creating new DM thread for users ${user1_id} and ${user2_id}`);
-                const { data: newThread, error: newThreadError } = await supabase
-                    .from('dm_threads')
-                    .insert({ user1_id, user2_id })
-                    .select('id')
-                    .single();
-
-                if (newThreadError) {
-                    throw newThreadError;
-                }
-                threadId = newThread.id;
-                // console.log(`Created new DM thread ${threadId}`);
-              }
-
-            // STEP 3: Save the message using the determined threadId.
-            // Use verified senderId for security
-            const extendedDmPayload = {
-              senderId: verifiedSenderId,
-              receiverId,
-              message: normalizedMessage,
-              media_url: normalizedMediaUrls.length === 0
-                ? null
-                : normalizedMediaUrls.length === 1
-                  ? normalizedMediaUrls[0]
-                  : JSON.stringify(normalizedMediaUrls),
-              threadId: threadId 
-            };
-            // console.log('Saving DM message with payload:', extendedDmPayload);
-            
-            const savedDm = await saveDMMessage(extendedDmPayload);
-            // console.log('DM saved successfully:', savedDm);
-
-            // STEP 4: Emit to the recipient (if online) and send confirmation to the sender.
-            // Include tempId for optimistic UI matching
-            const savedDmWithTempId = { ...savedDm, tempId };
-
-            // Send confirmation to sender for optimistic UI update
-            socket.emit("dm_confirmed", savedDmWithTempId);
-            console.log(`DM confirmed to sender ${verifiedSenderId} with tempId ${tempId}`);
-            // Send to recipient (if online) - check local map first, then Redis for cross-instance
-            let receiverSocketId = userSocketMap.get(receiverId);
-            if (!receiverSocketId) {
-                receiverSocketId = (await getUserSocket(receiverId)) || undefined;
-            }
-            if (receiverSocketId) {
-                console.log(`[chatSocket] Emitting receive_dm to receiver ${receiverId} at socket ${receiverSocketId}`);
-                io.to(receiverSocketId).emit("receive_dm", savedDm);
-            } else {
-                console.warn(`[chatSocket] Receiver ${receiverId} not found (local or Redis) - cannot deliver receive_dm in real time`);
-            }
-
-        } catch (error) {
-            console.error("Failed to process DM:", error);
-            socket.emit("dm_error", { error: "Your DM could not be sent due to a server error.", tempId });
-        }
+      } catch (error) {
+        console.error("Failed to process DM:", error);
+        socket.emit("dm_error", { error: "Your DM could not be sent due to a server error.", tempId });
+      }
     });
 
     socket.on("disconnect", () => {

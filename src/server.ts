@@ -1,36 +1,36 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
-import express, { Request, Response } from 'express';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
+import express, { Request, Response } from 'express';
 import http from 'http';
 
+import { createClient } from 'redis';
 import authRoutes from './routes/auth';
-import messageRoutes from './routes/message';
-import profileRoutes from './routes/profile';
 import channelroutes from './routes/channel';
-import serverroutes from './routes/servers';
-import roleroutes from './routes/roles';
 import contactroutes from "./routes/contact";
 import friendroutes from "./routes/friend";
 import mentionRoutes from "./routes/mentions";
-import { createClient } from 'redis';
+import messageRoutes from './routes/message';
+import notificationRoutes from "./routes/notifications";
+import profileRoutes from './routes/profile';
+import roleroutes from './routes/roles';
+import serverroutes from './routes/servers';
 
 import { rateLimiter } from './middleware/rateLimiter';
 
 //Socket imports
-import { Server } from 'socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
-import { setupChatSocket } from './sockets/chatSocket';
+import { Server } from 'socket.io';
 import { subscribeToChannel } from './redis/sub';
+import { setIO, setupChatSocket } from './sockets/chatSocket';
 import { setupVoiceSocket } from './sockets/voiceSocket';
-import {setIO} from "./sockets/chatSocket";
 
 
 const app = express();
 const httpServer = http.createServer(app);
-const pubClient = createClient({url: process.env.REDIS_URL});
+const pubClient = createClient({ url: process.env.REDIS_URL });
 const subClient = pubClient.duplicate();
 
 pubClient.connect();
@@ -47,12 +47,12 @@ const allowedOrigins = process.env.FRONTEND_URL?.split(',').map(url => url.trim(
 ];
 
 const io = new Server(httpServer, {
-  adapter: createAdapter(pubClient,subClient),
+  adapter: createAdapter(pubClient, subClient),
   cors: {
     origin: (origin, callback) => {
       // Allow requests with no origin (mobile apps, Postman, etc.)
       if (!origin) return callback(null, true);
-      
+
       if (allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
@@ -75,7 +75,7 @@ const io = new Server(httpServer, {
 });
 
 
-io.engine.on("connection",(rawSocket) => {
+io.engine.on("connection", (rawSocket) => {
   rawSocket.request = null;
 })
 
@@ -92,7 +92,7 @@ const corsOptions: cors.CorsOptions = {
   origin: (origin, callback) => {
     // Allow requests with no origin (mobile apps, Postman, etc.)
     if (!origin) return callback(null, true);
-    
+
     if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
@@ -107,15 +107,16 @@ const corsOptions: cors.CorsOptions = {
 app.use(cors(corsOptions));
 
 // Routes with middleware
-app.use('/api/auth', rateLimiter,authRoutes);
-app.use('/api/message',  messageRoutes);
-app.use('/api/profile',  profileRoutes);
-app.use('/api/newserver',  serverroutes);
-app.use('/api/channel',  channelroutes);
-app.use('/api/roles',  roleroutes);
-app.use('/api/contact',  contactroutes);
-app.use('/api/friends',  friendroutes);
-app.use('/api/mentions',mentionRoutes);
+app.use('/api/auth', rateLimiter, authRoutes);
+app.use('/api/message', messageRoutes);
+app.use('/api/profile', profileRoutes);
+app.use('/api/newserver', serverroutes);
+app.use('/api/channel', channelroutes);
+app.use('/api/roles', roleroutes);
+app.use('/api/contact', contactroutes);
+app.use('/api/friends', friendroutes);
+app.use('/api/mentions', mentionRoutes);
+app.use('/api/notifications', notificationRoutes);
 // Health check endpoint
 app.get('/', (_req: Request, res: Response) => {
   res.json({ message: 'Hello from echo-backend!', status: 'healthy' });
