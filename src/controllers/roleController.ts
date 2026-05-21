@@ -4,28 +4,81 @@ import { getPermissionsByRoleId } from '../middleware/permissionMiddleware';
 import { AuthenticatedRequest } from '../middleware/authMiddleware';
 import {v4 as uuidv4} from 'uuid'
 
-// Helper function to check if user is owner or admin
-export async function checkOwnerOrAdmin(userId: string, serverId: string): Promise<{ isOwner: boolean; isAdmin: boolean }> {
-  // Check if user is server owner
+const SERVER_ACCESS_CACHE_TTL_MS = 15 * 1000;
+
+type CacheEntry<T> = {
+  value: T;
+  expiresAt: number;
+};
+
+type ServerRoleAssignment = {
+  role_id: string;
+  roles: {
+    id: string;
+    name: string | null;
+    role_type: string | null;
+    server_id: string;
+  };
+};
+
+const ownerAdminCache = new Map<string, CacheEntry<{ isOwner: boolean; isAdmin: boolean }>>();
+const membershipCache = new Map<string, CacheEntry<boolean>>();
+const userRolesCache = new Map<string, CacheEntry<ServerRoleAssignment[]>>();
+
+function getCacheKey(userId: string, serverId: string): string {
+  return `${serverId}:${userId}`;
+}
+
+function getCachedValue<T>(cache: Map<string, CacheEntry<T>>, key: string): T | null {
+  const cachedEntry = cache.get(key);
+
+  if (!cachedEntry) {
+    return null;
+  }
+
+  if (cachedEntry.expiresAt <= Date.now()) {
+    cache.delete(key);
+    return null;
+  }
+
+  return cachedEntry.value;
+}
+
+function setCachedValue<T>(cache: Map<string, CacheEntry<T>>, key: string, value: T): T {
+  cache.set(key, {
+    value,
+    expiresAt: Date.now() + SERVER_ACCESS_CACHE_TTL_MS,
+  });
+
+  return value;
+}
+
+async function getServerOwnerId(serverId: string): Promise<string | null> {
   const { data: server } = await supabase
     .from('servers')
     .select('owner_id')
     .eq('id', serverId)
     .single();
 
-  const isOwner = server?.owner_id === userId;
+  return server?.owner_id ?? null;
+}
 
-  // Check if user has admin role.
-  // Ownership must come from servers.owner_id only.
-  const { data: userRoles } = await supabase
-    .from('user_roles')
-    .select(`
-      role_id,
-      roles!inner(role_type, name, server_id)
-    `)
-    .eq('user_id', userId);
+// Helper function to check if user is owner or admin
+export async function checkOwnerOrAdmin(userId: string, serverId: string): Promise<{ isOwner: boolean; isAdmin: boolean }> {
+  const cacheKey = getCacheKey(userId, serverId);
+  const cachedResult = getCachedValue(ownerAdminCache, cacheKey);
 
-  const isAdmin = userRoles?.some((ur: any) => {
+  if (cachedResult) {
+    return cachedResult;
+  }
+
+  const [ownerId, userRoles] = await Promise.all([
+    getServerOwnerId(serverId),
+    getUserRoles(userId, serverId),
+  ]);
+
+  const isOwner = ownerId === userId;
+  const isAdmin = userRoles.some((ur) => {
     const inCorrectServer = ur.roles?.server_id === serverId;
     const roleType = (ur.roles?.role_type || '').toString().toLowerCase();
     const roleName = (ur.roles?.name || '').toString().toLowerCase();
@@ -33,25 +86,25 @@ export async function checkOwnerOrAdmin(userId: string, serverId: string): Promi
       roleType === 'admin' ||
       roleName === 'admin'
     );
-  }) || false;
+  });
 
-  return { isOwner, isAdmin };
+  return setCachedValue(ownerAdminCache, cacheKey, { isOwner, isAdmin });
 }
 
 // Helper function to check if user is a member or owner of server
-async function checkMembershipOrOwnership(userId: string, serverId: string): Promise<boolean> {
-  // Check if user is server owner
-  const { data: server } = await supabase
-    .from('servers')
-    .select('owner_id')
-    .eq('id', serverId)
-    .single();
+export async function checkMembershipOrOwnership(userId: string, serverId: string): Promise<boolean> {
+  const cacheKey = getCacheKey(userId, serverId);
+  const cachedResult = getCachedValue(membershipCache, cacheKey);
 
-  if (server?.owner_id === userId) {
-    return true;
+  if (cachedResult !== null) {
+    return cachedResult;
   }
 
-  // Check if user is a member - server_members has composite primary key (user_id, server_id)
+  const ownerId = await getServerOwnerId(serverId);
+  if (ownerId === userId) {
+    return setCachedValue(membershipCache, cacheKey, true);
+  }
+
   const { data: membership } = await supabase
     .from('server_members')
     .select('user_id')
@@ -59,7 +112,51 @@ async function checkMembershipOrOwnership(userId: string, serverId: string): Pro
     .eq('user_id', userId)
     .maybeSingle();
 
-  return !!membership;
+  return setCachedValue(membershipCache, cacheKey, !!membership);
+}
+
+export async function getUserRoles(userId: string, serverId: string): Promise<ServerRoleAssignment[]> {
+  const cacheKey = getCacheKey(userId, serverId);
+  const cachedRoles = getCachedValue(userRolesCache, cacheKey);
+
+  if (cachedRoles) {
+    return cachedRoles;
+  }
+
+  const { data: userRoles, error } = await supabase
+    .from('user_roles')
+    .select(`
+      role_id,
+      roles!inner(id, name, role_type, server_id)
+    `)
+    .eq('user_id', userId)
+    .eq('roles.server_id', serverId);
+
+  if (error || !userRoles) {
+    return setCachedValue(userRolesCache, cacheKey, []);
+  }
+
+  const normalizedRoles = userRoles
+    .map((userRole: any) => {
+      const role = Array.isArray(userRole.roles) ? userRole.roles[0] : userRole.roles;
+
+      if (!role?.id || !role?.server_id) {
+        return null;
+      }
+
+      return {
+        role_id: userRole.role_id,
+        roles: {
+          id: role.id,
+          name: role.name ?? null,
+          role_type: role.role_type ?? null,
+          server_id: role.server_id,
+        },
+      };
+    })
+    .filter((role): role is ServerRoleAssignment => role !== null);
+
+  return setCachedValue(userRolesCache, cacheKey, normalizedRoles);
 }
 
 // Get all roles for a server (any member can view)

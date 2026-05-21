@@ -547,6 +547,158 @@ interface DmThread {
     user2_id: string;
 }
 
+type DmThreadReadStatus = {
+    thread_id: string;
+    last_read_at: string;
+};
+
+type DmThreadUser = {
+    id: string;
+    username: string | null;
+    avatar_url: string | null;
+};
+
+type DmMessageRecord = {
+    id?: string;
+    thread_id: string;
+    sender_id: string;
+    timestamp: string;
+    media_url?: unknown;
+    content?: string | null;
+};
+
+type DmThreadPreviewRecord = DmMessageRecord & {
+    sender?: {
+        id: string;
+        username: string | null;
+        avatar_url: string | null;
+    } | null;
+};
+
+function dedupeThreadsByOtherUser(threads: DmThread[], userId: string): DmThread[] {
+    const seenPairs = new Map<string, DmThread>();
+
+    threads.forEach((thread) => {
+        const otherUserId = thread.user1_id === userId ? thread.user2_id : thread.user1_id;
+        if (!seenPairs.has(otherUserId)) {
+            seenPairs.set(otherUserId, thread);
+        }
+    });
+
+    return Array.from(seenPairs.values());
+}
+
+async function getUserDmThreads(userId: string): Promise<DmThread[]> {
+    const { data: threads, error } = await supabase
+        .from('dm_threads')
+        .select('id, user1_id, user2_id')
+        .or(`user1_id.eq."${userId}",user2_id.eq."${userId}"`);
+
+    if (error) {
+        throw error;
+    }
+
+    if (!threads?.length) {
+        return [];
+    }
+
+    return dedupeThreadsByOtherUser(threads as DmThread[], userId);
+}
+
+async function getThreadReadStatusMap(userId: string, threadIds: string[]): Promise<Map<string, string>> {
+    if (threadIds.length === 0) {
+        return new Map();
+    }
+
+    const { data: readStatuses, error } = await supabase
+        .from('thread_read_status')
+        .select('thread_id, last_read_at')
+        .eq('user_id', userId)
+        .in('thread_id', threadIds);
+
+    if (error && error.code !== 'PGRST116') {
+        throw error;
+    }
+
+    const readStatusMap = new Map<string, string>();
+    (readStatuses as DmThreadReadStatus[] | null)?.forEach((status) => {
+        readStatusMap.set(status.thread_id, status.last_read_at);
+    });
+
+    return readStatusMap;
+}
+
+async function getThreadLatestMessage(threadId: string): Promise<DmMessageRecord | null> {
+    const { data, error } = await supabase
+        .from('dm_messages')
+        .select('thread_id, sender_id, timestamp, media_url, content')
+        .eq('thread_id', threadId)
+        .order('timestamp', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+    if (error) {
+        throw error;
+    }
+
+    return (data as DmMessageRecord | null) || null;
+}
+
+async function getThreadUnreadCount(threadId: string, userId: string, lastReadAt?: string): Promise<number> {
+    let query = supabase
+        .from('dm_messages')
+        .select('id', { count: 'exact', head: true })
+        .eq('thread_id', threadId)
+        .neq('sender_id', userId);
+
+    if (lastReadAt) {
+        query = query.gt('timestamp', lastReadAt);
+    }
+
+    const { count, error } = await query;
+
+    if (error) {
+        throw error;
+    }
+
+    return count || 0;
+}
+
+async function getThreadMessagesPage(threadId: string, pageSize: number): Promise<Array<DmMessageRecord & {
+    sender?: {
+        id: string;
+        username: string | null;
+        avatar_url: string | null;
+    } | null;
+    media_urls: string[];
+    username: string | null;
+    sender_avatar_url: string | null;
+}>> {
+    const { data, error } = await supabase
+        .from('dm_messages')
+        .select(`
+            *,
+            sender:users!sender_id (
+                id,
+                username,
+                avatar_url
+            )
+        `)
+        .eq('thread_id', threadId)
+        .order('timestamp', { ascending: false })
+        .limit(pageSize);
+
+    if (error) {
+        throw error;
+    }
+
+    return ((data as DmThreadPreviewRecord[] | null) || []).map((message) => ({
+        ...withMediaUrls(message),
+        username: message.sender?.username || null,
+        sender_avatar_url: message.sender?.avatar_url || null,
+    }));
+}
+
 export const getDmThreadMessages = async (req: Request, res: Response): Promise<any> => {
     try {
         const { threadId } = req.params;
@@ -602,152 +754,115 @@ export const getDmThreadMessages = async (req: Request, res: Response): Promise<
 
 export const getDmMessages = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
     try {
-        const user_id = req.user?.sub
-        const pageSize = 15
-
-        console.log("Starting getDmMessages");
+        const user_id = req.user?.sub;
+        const rawOffset = req.query?.offset;
+        const shouldPaginate = rawOffset !== undefined;
+        const offset = Math.max(0, parseInt(rawOffset as string, 10) || 0);
+        const pageSize = 15;
 
         if (!user_id || typeof user_id !== 'string') {
-            res.status(401).json({ error: 'Unauthorized user context.' })
-            return
+            res.status(401).json({ error: 'Unauthorized user context.' });
+            return;
         }
 
-        const requestedUserId = req.params.userId
+        const requestedUserId = req.params.userId;
         if (requestedUserId && requestedUserId !== user_id) {
-            res.status(403).json({ error: 'User mismatch in request path.' })
-            return
+            res.status(403).json({ error: 'User mismatch in request path.' });
+            return;
         }
 
-        const { data: threads } = await supabase
-            .from('dm_threads')
-            .select('id, user1_id, user2_id')
-            .or(`user1_id.eq."${user_id}",user2_id.eq."${user_id}"`)
-
-
-        if (!threads || threads.length === 0) {
-            console.log("Thread not found for both peeps");
-            res.status(200).json({ threads: [] })
-            return
+        const userThreads = await getUserDmThreads(user_id);
+        if (userThreads.length === 0) {
+            res.status(200).json({ threads: [] });
+            return;
         }
 
-        // Deduplicate threads by other user
-        // const seenPairs = new Map<string, DmThread>()
-        // threads.forEach(thread => {
-        //     const otherUserId =
-        //         thread.user1_id === user_id ? thread.user2_id : thread.user1_id
-        //     if (!seenPairs.has(otherUserId)) {
-        //         seenPairs.set(otherUserId, thread)
-        //     }req.user?.sub
-        // })
+        const threadIds = userThreads.map((thread) => thread.id);
+        const otherUserIds = userThreads.map((thread) =>
+            thread.user1_id === user_id ? thread.user2_id : thread.user1_id
+        );
 
-        const userthreads = threads
-        const threadIds = userthreads.map(t => t.id)
-        const otherUserIds = userthreads.map(t =>
-            t.user1_id === user_id ? t.user2_id : t.user1_id
-        )
+        const [usersResult, readStatusMap] = await Promise.all([
+            supabase
+                .from('users')
+                .select('id, username, avatar_url')
+                .in('id', otherUserIds),
+            getThreadReadStatusMap(user_id, threadIds),
+        ]);
 
-        const { data: usersData } = await supabase
-            .from('users')
-            .select('id, username, avatar_url')
-            .in('id', otherUserIds)
+        if (usersResult.error) {
+            throw usersResult.error;
+        }
 
-        const usersMap = new Map<string, any>()
-        usersData?.forEach(u => usersMap.set(u.id, u))
+        const usersMap = new Map<string, DmThreadUser>();
+        (usersResult.data as DmThreadUser[] | null)?.forEach((user) => usersMap.set(user.id, user));
 
-        const { data: readStatuses } = await supabase
-            .from('thread_read_status')
-            .select('thread_id, last_read_at')
-            .eq('user_id', user_id)
-            .in('thread_id', threadIds)
+        const threadSummaries = await Promise.all(
+            userThreads.map(async (thread) => {
+                const lastReadAt = readStatusMap.get(thread.id);
+                const [latestMessage, unreadCount] = await Promise.all([
+                    getThreadLatestMessage(thread.id),
+                    getThreadUnreadCount(thread.id, user_id, lastReadAt),
+                ]);
 
-        const readStatusMap = new Map<string, string>()
-        readStatuses?.forEach(r => readStatusMap.set(r.thread_id, r.last_read_at))
+                return {
+                    thread,
+                    latestMessage,
+                    unreadCount,
+                };
+            })
+        );
 
-        console.log("Fetching the Dms for: ", user_id, threadIds);
+        threadSummaries.sort(
+            (a, b) =>
+                new Date(b.latestMessage?.timestamp || 0).getTime() -
+                new Date(a.latestMessage?.timestamp || 0).getTime()
+        );
 
-        const { data: messages } = await supabase        // const seenPairs = new Map<string, DmThread>()
-            // threads.forEach(thread => {
-            //     const otherUserId =
-            //         thread.user1_id === user_id ? thread.user2_id : thread.user1_id
-            //     if (!seenPairs.has(otherUserId)) {
-            //         seenPairs.set(otherUserId, thread)
-            //     }req.user?.sub
-            // })
-            .from('dm_messages')
-            .select('*')
-            .in('thread_id', threadIds)
-            .order('timestamp', { ascending: false })
-
-
-        // console.log(messages);
-
-        var counter = 0;
-
-        const messagesByThread = new Map<string, any[]>()
-        messages?.forEach(msg => {
-            const arr = messagesByThread.get(msg.thread_id) || []
-            arr.push(msg)
-            counter = counter + 1;
-            messagesByThread.set(msg.thread_id, arr)
-        })
-
-        console.log(counter);
-
-        const groupedThreads = userthreads.map(thread => {
-            const otherUserId =
-                thread.user1_id === user_id ? thread.user2_id : thread.user1_id
-            const otherUser = usersMap.get(otherUserId) || null
-            const msgs = (messagesByThread.get(thread.id) || []).map((msg) => ({
-                ...msg,
-                media_urls: normalizeMediaUrls(msg.media_url),
+        const paginatedSummaries = shouldPaginate
+            ? threadSummaries.slice(offset, offset + pageSize)
+            : threadSummaries;
+        const paginatedMessages = await Promise.all(
+            paginatedSummaries.map(async ({ thread }) => ({
+                threadId: thread.id,
+                messages: await getThreadMessagesPage(thread.id, pageSize),
             }))
+        );
+        const messagesByThread = new Map(
+            paginatedMessages.map(({ threadId, messages }) => [threadId, messages])
+        );
 
-            const lastReadAt = readStatusMap.get(thread.id)
-
-            const unreadCountMap = new Map<String, number>()
-
-            readStatuses?.forEach(rs => {
-                unreadCountMap.set(rs.thread_id, 0)
-            })
-
-            messages?.forEach(m => {
-                const lastReadAt = readStatusMap.get(m.thread_id)
-                if (
-                    m.sender_id !== user_id &&
-                    (!lastReadAt || new Date(m.timestamp) > new Date(lastReadAt))
-                ) {
-
-                    unreadCountMap.set(
-                        m.thread_id, (unreadCountMap.get(m.thread_id) || 0) + 1
-                    )
-
-                }
-            })
+        const groupedThreads = paginatedSummaries.map(({ thread, latestMessage, unreadCount }) => {
+            const otherUserId =
+                thread.user1_id === user_id ? thread.user2_id : thread.user1_id;
+            const otherUser = usersMap.get(otherUserId) || null;
+            const msgs = messagesByThread.get(thread.id) || [];
             const latestTimestamp =
-                msgs.length > 0 ? msgs[0].timestamp : new Date(0).toISOString()
-            const latestMessagePreview = getDmPreview(msgs[0])
+                latestMessage?.timestamp || new Date(0).toISOString();
+            const latestMessagePreview = getDmPreview(
+                latestMessage ? withMediaUrls(latestMessage) : undefined
+            );
 
             return {
                 thread_id: thread.id,
-                messages: msgs.slice(0, pageSize),
+                messages: msgs,
                 other_user: otherUser,
-                unread_count: unreadCountMap.get(thread.id) || 0,
+                unread_count: unreadCount,
                 recipient_id: otherUserId,
                 latest_message_timestamp: latestTimestamp,
                 latest_message_preview: latestMessagePreview
-            }
-        })
+            };
+        });
 
-        groupedThreads.sort(
-            (a, b) =>
-                new Date(b.latest_message_timestamp).getTime() -
-                new Date(a.latest_message_timestamp).getTime()
-        )
+        const hasMore = shouldPaginate && offset + pageSize < threadSummaries.length;
 
-        res.status(200).json({ threads: groupedThreads })
+        res.status(200).json({
+            threads: groupedThreads,
+            hasMore,
+        });
     } catch (err) {
-        console.error('Error in getDmMessages:', err)
-        res.status(500).json({ error: 'Internal server error' })
+        console.error('Error in getDmMessages:', err);
+        res.status(500).json({ error: 'Internal server error' });
     }
 }
 
@@ -768,89 +883,32 @@ export const getUnreadCounts = async (req: Request, res: Response): Promise<void
             return;
         }
 
-        // Get all threads for the user
-        const { data: threads, error: threadError } = await supabase
-            .from('dm_threads')
-            .select('id, user1_id, user2_id')
-            .or(`user1_id.eq.${user_id},user2_id.eq.${user_id}`);
-
-        if (threadError) {
-            console.error('Error fetching threads:', threadError);
-            res.status(500).json({ error: 'Failed to fetch threads.' });
-            return;
-        }
-
-        if (!threads || threads.length === 0) {
+        const threads = await getUserDmThreads(user_id);
+        if (threads.length === 0) {
             res.status(200).json({ unreadCounts: {}, totalUnread: 0 });
             return;
         }
 
-        // Deduplicate threads
-        const seenPairs = new Map<string, any>();
-        threads.forEach(thread => {
-            const otherUserId = thread.user1_id === user_id ? thread.user2_id : thread.user1_id;
-            if (!seenPairs.has(otherUserId)) {
-                seenPairs.set(otherUserId, thread)
-                    ;
-            }
-        });
-        const uniqueThreads = Array.from(seenPairs.values());
-        const threadIds = uniqueThreads.map(t => t.id);
+        const threadIds = threads.map((thread) => thread.id);
+        const readStatusMap = await getThreadReadStatusMap(user_id, threadIds);
 
-        // Get the last read timestamp for each thread
-        const { data: readStatuses, error: readError } = await supabase
-            .from('thread_read_status')
-            .select('thread_id, last_read_at')
-            .eq('user_id', user_id)
-            .in('thread_id', threadIds);
+        const unreadEntries = await Promise.all(
+            threadIds.map(async (threadId) => {
+                const unreadCount = await getThreadUnreadCount(
+                    threadId,
+                    user_id,
+                    readStatusMap.get(threadId)
+                );
 
-        if (readError && readError.code !== 'PGRST116') {
-            console.error('Error fetching read statuses:', readError);
-            // If table doesn't exist, fall back to counting all messages
-        }
+                return [threadId, unreadCount] as const;
+            })
+        );
 
-        // Create a map of thread_id to last_read_at
-        const readStatusMap = new Map<string, string>();
-        if (readStatuses) {
-            readStatuses.forEach(status => {
-                readStatusMap.set(status.thread_id, status.last_read_at);
-            });
-        }
-
-        // Get unread message counts for each thread
-        // Messages are unread if:
-        // 1. Sender is NOT the current user
-        // 2. Message timestamp is AFTER the last_read_at timestamp (or no read status exists)
-        const { data: messages, error: msgError } = await supabase
-            .from('dm_messages')
-            .select('thread_id, sender_id, id, timestamp')
-            .in('thread_id', threadIds)
-            .neq('sender_id', user_id); // Only messages sent by others
-
-        if (msgError) {
-            console.error('Error fetching messages:', msgError);
-            res.status(500).json({ error: 'Failed to fetch messages.' });
-            return;
-        }
-
-        // Count unread messages per thread
-        const unreadCounts: Record<string, number> = {};
+        const unreadCounts = Object.fromEntries(unreadEntries);
         let totalUnread = 0;
 
-        uniqueThreads.forEach(thread => {
-            const lastReadAt = readStatusMap.get(thread.id);
-            const threadMessages = messages?.filter(m => {
-                if (m.thread_id !== thread.id) return false;
-
-                // If no read status, all messages are unread
-                if (!lastReadAt) return true;
-
-                // Message is unread if timestamp is after last_read_at
-                return new Date(m.timestamp) > new Date(lastReadAt);
-            }) || [];
-
-            unreadCounts[thread.id] = threadMessages.length;
-            totalUnread += threadMessages.length;
+        threadIds.forEach((threadId) => {
+            totalUnread += unreadCounts[threadId] || 0;
         });
 
         res.status(200).json({

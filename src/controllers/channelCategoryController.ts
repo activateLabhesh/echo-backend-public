@@ -1,29 +1,7 @@
 import { Response } from 'express';
 import { supabase } from '../client/supabase';
 import { AuthenticatedRequest } from '../middleware/authMiddleware';
-import { checkOwnerOrAdmin } from './roleController';
-
-// Helper function to check if user is a member or owner of a server
-async function checkMembershipOrOwnership(userId: string, serverId: string): Promise<boolean> {
-  // Check if owner
-  const { data: server } = await supabase
-    .from('servers')
-    .select('owner_id')
-    .eq('id', serverId)
-    .single();
-
-  if (server?.owner_id === userId) return true;
-
-  // Check if member
-  const { data: membership } = await supabase
-    .from('server_members')
-    .select('id')
-    .eq('server_id', serverId)
-    .eq('user_id', userId)
-    .maybeSingle();
-
-  return !!membership;
-}
+import { checkMembershipOrOwnership, checkOwnerOrAdmin } from './roleController';
 
 // Get all channel categories for a server
 export const getChannelCategories = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
