@@ -2,11 +2,178 @@ import { Response } from 'express';
 import { AuthenticatedRequest } from '../middleware/authMiddleware';
 import { supabase } from '../client/supabase';
 
+type MentionNotificationRecord = {
+  id: string;
+  user_id: string;
+  message_id: string;
+  is_read: boolean;
+  created_at: string;
+};
+
+type MentionMessageRecord = {
+  id: string;
+  content: string | null;
+  sender_id: string | null;
+  channel_id: string | null;
+};
+
+type MentionUserRecord = {
+  id?: string;
+  username: string | null;
+  avatar_url: string | null;
+};
+
+type MentionChannelRecord = {
+  id?: string;
+  name: string | null;
+  server_id: string | null;
+};
+
+type MentionServerRecord = {
+  id?: string;
+  name: string | null;
+};
+
+function normalizeLimit(limit: unknown): number {
+  const parsedLimit = Number(limit);
+  if (!Number.isFinite(parsedLimit) || parsedLimit <= 0) {
+    return 20;
+  }
+
+  return Math.min(parsedLimit, 100);
+}
+
+function buildMentionNotificationResponse(
+  notification: MentionNotificationRecord,
+  message?: MentionMessageRecord | null,
+  sender?: MentionUserRecord | null,
+  channel?: MentionChannelRecord | null,
+  server?: MentionServerRecord | null,
+) {
+  return {
+    id: notification.id,
+    user_id: notification.user_id,
+    message_id: notification.message_id,
+    is_read: notification.is_read,
+    created_at: notification.created_at,
+    message: {
+      id: message?.id,
+      content: message?.content || '',
+      sender_id: message?.sender_id,
+      channel_id: message?.channel_id,
+      users: {
+        username: sender?.username || 'Unknown User',
+        avatar_url: sender?.avatar_url || null,
+      },
+      channels: {
+        name: channel?.name || 'unknown',
+        server_id: channel?.server_id || null,
+        servers: {
+          name: server?.name || 'Unknown Server',
+        },
+      },
+    },
+  };
+}
+
+async function buildManualMentionNotifications(notifications: MentionNotificationRecord[]) {
+  const messageIds = notifications.map((notification) => notification.message_id);
+
+  const { data: messages, error: messageError } = await supabase
+    .from('messages')
+    .select('id, content, sender_id, channel_id')
+    .in('id', messageIds);
+
+  if (messageError) {
+    throw messageError;
+  }
+
+  const messageMap = new Map<string, MentionMessageRecord>();
+  const senderIds = new Set<string>();
+  const channelIds = new Set<string>();
+
+  (messages as MentionMessageRecord[] | null)?.forEach((message) => {
+    messageMap.set(message.id, message);
+
+    if (message.sender_id) {
+      senderIds.add(message.sender_id);
+    }
+
+    if (message.channel_id) {
+      channelIds.add(message.channel_id);
+    }
+  });
+
+  const [usersResult, channelsResult] = await Promise.all([
+    senderIds.size > 0
+      ? supabase.from('users').select('id, username, avatar_url').in('id', Array.from(senderIds))
+      : Promise.resolve({ data: [] as MentionUserRecord[], error: null }),
+    channelIds.size > 0
+      ? supabase.from('channels').select('id, name, server_id').in('id', Array.from(channelIds))
+      : Promise.resolve({ data: [] as MentionChannelRecord[], error: null }),
+  ]);
+
+  if (usersResult.error) {
+    throw usersResult.error;
+  }
+
+  if (channelsResult.error) {
+    throw channelsResult.error;
+  }
+
+  const userMap = new Map<string, MentionUserRecord>();
+  (usersResult.data as MentionUserRecord[] | null)?.forEach((user) => {
+    if (user.id) {
+      userMap.set(user.id, user);
+    }
+  });
+
+  const channelMap = new Map<string, MentionChannelRecord>();
+  const serverIds = new Set<string>();
+  (channelsResult.data as MentionChannelRecord[] | null)?.forEach((channel) => {
+    if (channel.id) {
+      channelMap.set(channel.id, channel);
+    }
+
+    if (channel.server_id) {
+      serverIds.add(channel.server_id);
+    }
+  });
+
+  const serverMap = new Map<string, MentionServerRecord>();
+  if (serverIds.size > 0) {
+    const { data: servers, error: serverError } = await supabase
+      .from('servers')
+      .select('id, name')
+      .in('id', Array.from(serverIds));
+
+    if (serverError) {
+      throw serverError;
+    }
+
+    (servers as MentionServerRecord[] | null)?.forEach((server) => {
+      if (server.id) {
+        serverMap.set(server.id, server);
+      }
+    });
+  }
+
+  return notifications.map((notification) => {
+    const message = messageMap.get(notification.message_id) || null;
+    const sender = message?.sender_id ? userMap.get(message.sender_id) || null : null;
+    const channel = message?.channel_id ? channelMap.get(message.channel_id) || null : null;
+    const server = channel?.server_id ? serverMap.get(channel.server_id) || null : null;
+
+    return buildMentionNotificationResponse(notification, message, sender, channel, server);
+  });
+}
+
 export const getMentions = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     // Get user ID from authenticated user or query parameter
     const userId = req.user?.sub || req.query.userId;
     const { page = 1, limit = 20, unreadOnly = false, channelId } = req.query;
+    const normalizedLimit = normalizeLimit(limit);
     
     if (!userId) {
       res.status(400).json({ error: 'User ID is required' });
@@ -77,7 +244,7 @@ export const getMentions = async (req: AuthenticatedRequest, res: Response): Pro
 
     const { data: detailedNotifications, error: detailError } = await query
       .order('created_at', { ascending: false })
-      .limit(Number(limit));
+      .limit(normalizedLimit);
 
     if (detailError) {
       console.error('Error fetching detailed notifications:', detailError);
@@ -87,95 +254,24 @@ export const getMentions = async (req: AuthenticatedRequest, res: Response): Pro
       // console.log('Falling back to manual data fetching');
       
       try {
-        const manualNotifications = [];
-        
-        for (const notification of userNotifications.slice(0, Number(limit))) {
-          // Get message data
-          const { data: message } = await supabase
-            .from('messages')
-            .select('id, content, sender_id, channel_id')
-            .eq('id', notification.message_id)
-            .single();
-          
-          let messageData = {
-            id: notification.id,
-            user_id: notification.user_id,
-            message_id: notification.message_id,
-            is_read: notification.is_read,
-            created_at: notification.created_at,
-            message: {
-              id: message?.id,
-              content: message?.content || '',
-              sender_id: message?.sender_id,
-              channel_id: message?.channel_id,
-              users: {
-                username: 'Unknown User',
-                avatar_url: null
-              },
-              channels: {
-                name: 'unknown',
-                server_id: null,
-                servers: {
-                  name: 'Unknown Server'
-                }
-              }
-            }
-          };
-          
-          if (message) {
-            // Get sender data
-            const { data: sender } = await supabase
-              .from('users')
-              .select('username, avatar_url')
-              .eq('id', message.sender_id)
-              .single();
-            
-            // Get channel data
-            const { data: channel } = await supabase
-              .from('channels')
-              .select('name, server_id')
-              .eq('id', message.channel_id)
-              .single();
-            
-            // Get server data
-            let serverName = 'Unknown Server';
-            if (channel?.server_id) {
-              const { data: server } = await supabase
-                .from('servers')
-                .select('name')
-                .eq('id', channel.server_id)
-                .single();
-              serverName = server?.name || 'Unknown Server';
-            }
-            
-            // Update the message data
-            messageData.message = {
-              ...messageData.message,
-              users: {
-                username: sender?.username || 'Unknown User',
-                avatar_url: sender?.avatar_url || null
-              },
-              channels: {
-                name: channel?.name || 'unknown',
-                server_id: channel?.server_id || null,
-                servers: {
-                  name: serverName
-                }
-              }
-            };
-          }
-          
-          manualNotifications.push(messageData);
-        }
+        const filteredNotifications = (userNotifications as MentionNotificationRecord[])
+          .filter((notification) => unreadOnly !== 'true' || !notification.is_read)
+          .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+          .slice(0, normalizedLimit);
+
+        const manualNotifications = await buildManualMentionNotifications(filteredNotifications);
+        const filteredManualNotifications = channelId
+          ? manualNotifications.filter((notification) => notification.message.channel_id === channelId)
+          : manualNotifications;
         
         // console.log('Manual data fetch successful, returning', manualNotifications.length, 'notifications');
-        res.json(manualNotifications);
+        res.json(filteredManualNotifications);
         return;
         
       } catch (manualError) {
         console.error('Manual data fetch also failed:', manualError);
         // Final fallback - return basic notifications
-        res.json(userNotifications.slice(0, Number(limit)));
+        res.json(userNotifications.slice(0, normalizedLimit));
         return;
       }
     }
@@ -201,30 +297,7 @@ export const getMentions = async (req: AuthenticatedRequest, res: Response): Pro
       //   serverName: server?.name
       // });
       
-      return {
-        id: notification.id,
-        user_id: notification.user_id,
-        message_id: notification.message_id,
-        is_read: notification.is_read,
-        created_at: notification.created_at,
-        message: {
-          id: message?.id,
-          content: message?.content || '',
-          sender_id: message?.sender_id,
-          channel_id: message?.channel_id,
-          users: {
-            username: user?.username || 'Unknown User',
-            avatar_url: user?.avatar_url || null
-          },
-          channels: {
-            name: channel?.name || 'unknown',
-            server_id: channel?.server_id,
-            servers: {
-              name: server?.name || 'Unknown Server'
-            }
-          }
-        }
-      };
+      return buildMentionNotificationResponse(notification as MentionNotificationRecord, message, user, channel, server);
     }) || [];
 
     // console.log('Sending transformed notifications:', transformedNotifications.length);

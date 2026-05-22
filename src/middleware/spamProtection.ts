@@ -1,33 +1,34 @@
-//prevents users from submitting the same action repeatedly in a short period of time
-
 import { Request, Response, NextFunction } from 'express';
-import Redis from 'ioredis';
+import { AuthenticatedRequest } from './authMiddleware';
+import { getCacheRedisClient } from '../redis/cacheClient';
 
-const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
-const COOLDOWN=10;
+const redis = getCacheRedisClient();
+const COOLDOWN = 10;
 
-export const spamProtection = async (req: Request, res: Response, next: NextFunction):Promise<void> => {
-  let actionKey: string | undefined;
-  const user = (req as any).user;
+const getSpamProtectionKey = (req: AuthenticatedRequest): string => {
+  const userId = req.user?.sub;
 
-  if (!user || !user.userId) {
-    actionKey = `spam:ip:${req.ip}:${req.originalUrl}`;
-  }else{
-  actionKey = `spam:user:${user.userId}:${req.path}`;
-  }
-  
-  try{
-  const isSpamming = await redis.get(actionKey); //check if same action have been performed before 
-
-  if (isSpamming) {
-    res.status(429).json({ message: 'Spam detected. Slow down a bit' });
-    return
+  if (userId) {
+    return `spam:user:${userId}:${req.path}`;
   }
 
-  await redis.set(actionKey, '1', 'EX', COOLDOWN); //action key is set to expire in 10 sec
-  next(); 
-  }catch(err){
-    console.error("Redis error:", err);
-    res.status(500).json({ message: "Internal server error" });
+  return `spam:ip:${req.ip}:${req.originalUrl}`;
+};
+
+export const spamProtection = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  const authReq = req as AuthenticatedRequest;
+  const actionKey = getSpamProtectionKey(authReq);
+
+  try {
+    const lockResult = await redis.set(actionKey, '1', 'EX', COOLDOWN, 'NX');
+
+    if (lockResult === null) {
+      res.status(429).json({ message: 'Spam detected. Slow down a bit' });
+      return;
+    }
+  } catch (error) {
+    console.error('[spamProtection] Redis unavailable, allowing request:', error);
   }
+
+  next();
 }

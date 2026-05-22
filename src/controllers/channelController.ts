@@ -1,52 +1,7 @@
 import { Response } from 'express';
 import { supabase } from '../client/supabase'; 
 import { AuthenticatedRequest } from '../middleware/authMiddleware';
-import { checkOwnerOrAdmin } from './roleController';
-
-// Helper function to get user's roles in a server
-async function getUserRoles(userId: string, serverId: string) {
-  // Step 1: Get ALL user's role IDs (user_roles table doesn't have server_id column)
-  const { data: userRoleLinks, error: userRoleError } = await supabase
-    .from('user_roles')
-    .select('role_id')
-    .eq('user_id', userId);
-
-  if (userRoleError || !userRoleLinks || userRoleLinks.length === 0) {
-    return [];
-  }
-
-  const roleIds = userRoleLinks.map(ur => ur.role_id);
-
-  // Step 2: Get role details for those role IDs, filtered by server_id
-  const { data: roles, error: rolesError } = await supabase
-    .from('roles')
-    .select('id, name, role_type, server_id')
-    .in('id', roleIds)
-    .eq('server_id', serverId);  // Filter by server_id in roles table
-
-  if (rolesError || !roles || roles.length === 0) {
-    return [];
-  }
-
-  // Step 3: Combine them in the expected format
-  const combined = userRoleLinks
-    .map(urLink => {
-      const role = roles.find(r => r.id === urLink.role_id);
-      if (!role) return null;  // Skip if role not in this server
-      return {
-        role_id: urLink.role_id,
-        roles: {
-          id: role.id,
-          name: role.name,
-          role_type: role.role_type,
-          server_id: role.server_id
-        }
-      };
-    })
-    .filter(r => r !== null);  // Remove nulls
-
-  return combined;
-}
+import { checkMembershipOrOwnership, checkOwnerOrAdmin, getUserRoles } from './roleController';
 
 // Helper function to check if user is admin/owner
 function isAdmin(userRoles: any[]) {
@@ -74,35 +29,19 @@ export async function checkChannelAccess(userId: string, channelId: string): Pro
 
   if (!channel) return false;
 
-  // Check if user is server owner (owners can see all channels)
-  const { data: server } = await supabase
-    .from('servers')
-    .select('owner_id')
-    .eq('id', channel.server_id)
-    .single();
+  const { isOwner, isAdmin: userIsAdmin } = await checkOwnerOrAdmin(userId, channel.server_id);
 
-  if (server?.owner_id === userId) return true;
+  if (isOwner || userIsAdmin) return true;
 
-  // Get user's roles in this server
   const userRoles = await getUserRoles(userId, channel.server_id);
   const userRoleIds = userRoles.map((ur: any) => ur.role_id);
-
-  // Admins can always see all channels
-  if (isAdmin(userRoles)) return true;
 
   // Default to 'normal' if channel_type is not set
   const channelType = channel.channel_type || 'normal';
 
   // For normal and read_only channels, all server members can view
   if (channelType === 'normal' || channelType === 'read_only') {
-    const { data: membership } = await supabase
-      .from('server_members')
-      .select('id')
-      .eq('server_id', channel.server_id)
-      .eq('user_id', userId)
-      .maybeSingle();
-
-    return !!membership;
+    return checkMembershipOrOwnership(userId, channel.server_id);
   }
 
   // For role_restricted channels, check if user has allowed role
@@ -126,26 +65,19 @@ export async function checkChannelSendPermission(userId: string, channelId: stri
     return { canSend: false, error: 'Channel not found' };
   }
 
-  // Check if user is server owner first (owners can always send)
-  const { data: server } = await supabase
-    .from('servers')
-    .select('owner_id')
-    .eq('id', channel.server_id)
-    .single();
+  const { isOwner, isAdmin: userIsAdmin } = await checkOwnerOrAdmin(userId, channel.server_id);
 
-  if (server?.owner_id === userId) {
+  if (isOwner) {
     return { canSend: true };
   }
 
-  // Get user's roles in this server
   const userRoles = await getUserRoles(userId, channel.server_id);
   const userRoleIds = userRoles.map((ur: any) => ur.role_id);
 
-  const admin = isAdmin(userRoles);
   const moderator = isModerator(userRoles, channel.moderator_role_ids || []);
 
   // Admins can always send
-  if (admin) {
+  if (userIsAdmin) {
     return { canSend: true };
   }
 

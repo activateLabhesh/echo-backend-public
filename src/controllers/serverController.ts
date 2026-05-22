@@ -8,6 +8,20 @@ import { checkOwnerOrAdmin } from './roleController';
 const normalizeRoleLabel = (value: unknown): string =>
   (value || '').toString().trim().toLowerCase();
 
+const getInviteBaseUrl = (req: Request): string => {
+  const configuredFrontendUrl = process.env.FRONTEND_URL?.split(',')[0]?.trim();
+  const configuredWebBaseUrl = process.env.WEB_BASE_URL?.trim();
+  const requestOrigin = req.get('origin')?.trim();
+
+  const baseUrl = configuredFrontendUrl || configuredWebBaseUrl || requestOrigin || '';
+  return baseUrl.replace(/\/+$/, '');
+};
+
+const buildInviteLink = (req: Request, inviteId: string): string => {
+  const baseUrl = getInviteBaseUrl(req);
+  return baseUrl ? `${baseUrl}/invite/${inviteId}` : `/invite/${inviteId}`;
+};
+
 const getServerRoleMeta = async (serverId: string): Promise<{
   roleIds: string[];
   ownerRoleId: string | null;
@@ -1282,10 +1296,9 @@ export const getServerInvites = async (req: AuthenticatedRequest, res: Response)
 
     const { data: invites, error: invitesError } = await supabase
       .from('invites')
-      .select('id, inviter_id, use_limit, expiry, people_joined, is_valid, created_at')
+      .select('*')
       .eq('server_id', serverId)
-      .eq('is_valid', true)
-      .order('created_at', { ascending: false });
+      .eq('is_valid', true);
 
     if (invitesError) {
       console.error('Error fetching server invites:', invitesError);
@@ -1293,7 +1306,12 @@ export const getServerInvites = async (req: AuthenticatedRequest, res: Response)
       return;
     }
 
-    res.status(200).json(invites || []);
+    res.status(200).json(
+      (invites || []).map((invite) => ({
+        ...invite,
+        inviteLink: buildInviteLink(req, invite.id),
+      }))
+    );
 
   } catch (error) {
     console.error('Error getting server invites:', error);
@@ -1420,8 +1438,7 @@ export const createServerInvite = async (req: AuthenticatedRequest, res: Respons
       return;
     }
 
-    const webBaseUrl = process.env.WEB_BASE_URL || req.get('origin') || '';
-    const inviteLink = webBaseUrl ? `${webBaseUrl}/invite/${inviteId}` : `/invite/${inviteId}`;
+    const inviteLink = buildInviteLink(req, inviteId);
 
     res.status(201).json({
       message: 'Invite created successfully',
