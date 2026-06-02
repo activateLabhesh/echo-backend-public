@@ -762,3 +762,54 @@ export const joinChannel = async (req: AuthenticatedRequest, res: Response): Pro
         res.status(500).json({ error: 'An unexpected internal server error occurred.' });
     }
 };
+
+export const deleteChannel = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const { server_id, channel_id } = req.params;
+    const userId = req.user?.sub;
+
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const { data: channel, error: channelError } = await supabase
+      .from('channels')
+      .select('id, server_id')
+      .eq('id', channel_id)
+      .eq('server_id', server_id)
+      .maybeSingle();
+
+    if (channelError) {
+      res.status(500).json({ error: channelError.message });
+      return;
+    }
+
+    if (!channel) {
+      res.status(404).json({ error: 'Channel not found' });
+      return;
+    }
+
+    const { isOwner, isAdmin } = await checkOwnerOrAdmin(userId, server_id);
+
+    if (!isOwner && !isAdmin) {
+      res.status(403).json({ error: 'Only owners and admins can delete channels' });
+      return;
+    }
+
+    const { error: deleteError } = await supabase
+      .from('channels')
+      .delete()
+      .eq('id', channel_id)
+      .eq('server_id', server_id);
+
+    if (deleteError) {
+      res.status(500).json({ error: deleteError.message });
+      return;
+    }
+
+    res.status(200).json({ message: 'Channel deleted successfully' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+};

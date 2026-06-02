@@ -4,6 +4,7 @@ import {
   createChannel,
   getChannels, 
   joinChannel,
+  deleteChannel,
   setChannelRoleAccess,
   getChannelRoleAccess,
   getChannelsWithAccess,
@@ -30,8 +31,9 @@ route.put('/:server_id/categories/:category_id', authenticate, updateChannelCate
 route.delete('/:server_id/categories/:category_id', authenticate, deleteChannelCategory);
 
 // Channel reorder routes
-route.put('/:server_id/channels/reorder', authenticate, reorderChannels);
-route.put('/:server_id/channels/:channel_id', authenticate, updateChannel);
+ route.put('/:server_id/channels/reorder', authenticate, reorderChannels);
+ route.put('/:server_id/channels/:channel_id', authenticate, updateChannel);
+ route.delete('/:server_id/channels/:channel_id', authenticate, deleteChannel);
 
 // Existing routes
 route.post('/:server_id/NewChannel', authenticate, createChannel);

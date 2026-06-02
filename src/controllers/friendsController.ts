@@ -320,3 +320,59 @@ export const search_friends = async (req: AuthenticatedRequest, res: Response): 
         res.status(500).json({ message: "An unexpected error occurred." });
     }
 };
+
+export const unfriend = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+    const userId = req.user?.sub;
+    const { friendId } = req.params;
+
+    if (!userId) {
+        res.status(401).json({ message: "Unauthorized. Please log in." });
+        return;
+    }
+
+    if (!friendId) {
+        res.status(400).json({ message: "Friend ID is required." });
+        return;
+    }
+
+    if (userId === friendId) {
+        res.status(400).json({ message: "You cannot unfriend yourself." });
+        return;
+    }
+
+    try {
+        const { data: friendship, error: friendshipError } = await supabase
+            .from('friends')
+            .select('friends_id')
+            .eq('status', 'accepted')
+            .or(`and(user1_id.eq.${userId},user2_id.eq.${friendId}),and(user1_id.eq.${friendId},user2_id.eq.${userId})`)
+            .maybeSingle();
+
+        if (friendshipError && friendshipError.code !== 'PGRST116') {
+            console.error("Error finding friendship:", friendshipError);
+            res.status(500).json({ message: "Failed to find friendship." });
+            return;
+        }
+
+        if (!friendship) {
+            res.status(404).json({ message: "Friendship not found." });
+            return;
+        }
+
+        const { error: deleteError } = await supabase
+            .from('friends')
+            .delete()
+            .eq('friends_id', friendship.friends_id);
+
+        if (deleteError) {
+            console.error("Error removing friendship:", deleteError);
+            res.status(500).json({ message: "Failed to remove friendship." });
+            return;
+        }
+
+        res.status(200).json({ message: "Friend removed successfully." });
+    } catch (error) {
+        console.error("Error in unfriend:", error);
+        res.status(500).json({ message: "An unexpected error occurred." });
+    }
+};
