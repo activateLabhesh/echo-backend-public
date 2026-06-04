@@ -288,7 +288,14 @@ export const reorderChannels = async (req: AuthenticatedRequest, res: Response):
 export const updateChannel = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const { server_id, channel_id } = req.params;
-    const { name, category_id, position } = req.body;
+    const {
+      name,
+      category_id,
+      position,
+      channel_type,
+      allowed_role_ids,
+      moderator_role_ids
+    } = req.body;
     const userId = req.user?.sub;
 
     if (!userId) {
@@ -303,10 +310,89 @@ export const updateChannel = async (req: AuthenticatedRequest, res: Response): P
       return;
     }
 
+    const validChannelTypes = ['normal', 'read_only', 'role_restricted'];
+    if (channel_type !== undefined && !validChannelTypes.includes(channel_type)) {
+      res.status(400).json({ error: 'Invalid channel type. Must be: normal, read_only, or role_restricted' });
+      return;
+    }
+
+    if (name !== undefined && (!name || name.trim().length === 0)) {
+      res.status(400).json({ error: 'Channel name cannot be empty' });
+      return;
+    }
+
+    if (allowed_role_ids !== undefined && !Array.isArray(allowed_role_ids)) {
+      res.status(400).json({ error: 'allowed_role_ids must be an array' });
+      return;
+    }
+
+    if (moderator_role_ids !== undefined && !Array.isArray(moderator_role_ids)) {
+      res.status(400).json({ error: 'moderator_role_ids must be an array' });
+      return;
+    }
+
+    if (category_id !== undefined && category_id !== null) {
+      const { data: category, error: categoryError } = await supabase
+        .from('channel_categories')
+        .select('id')
+        .eq('id', category_id)
+        .eq('server_id', server_id)
+        .maybeSingle();
+
+      if (categoryError) {
+        res.status(500).json({ error: categoryError.message });
+        return;
+      }
+
+      if (!category) {
+        res.status(400).json({ error: 'Category does not belong to this server or does not exist' });
+        return;
+      }
+    }
+
+    if (allowed_role_ids !== undefined && allowed_role_ids.length > 0) {
+      const { data: allowedRoles, error: roleCheckError } = await supabase
+        .from('roles')
+        .select('id, server_id')
+        .in('id', allowed_role_ids);
+
+      if (roleCheckError || !allowedRoles) {
+        res.status(500).json({ error: 'Failed to validate role IDs' });
+        return;
+      }
+
+      const invalidRoles = allowedRoles.filter(role => role.server_id !== server_id);
+      if (invalidRoles.length > 0 || allowedRoles.length !== allowed_role_ids.length) {
+        res.status(400).json({ error: 'One or more role IDs do not belong to this server or do not exist' });
+        return;
+      }
+    }
+
+    if (moderator_role_ids !== undefined && moderator_role_ids.length > 0) {
+      const { data: modRoles, error: modRoleCheckError } = await supabase
+        .from('roles')
+        .select('id, server_id')
+        .in('id', moderator_role_ids);
+
+      if (modRoleCheckError || !modRoles) {
+        res.status(500).json({ error: 'Failed to validate moderator role IDs' });
+        return;
+      }
+
+      const invalidModRoles = modRoles.filter(role => role.server_id !== server_id);
+      if (invalidModRoles.length > 0 || modRoles.length !== moderator_role_ids.length) {
+        res.status(400).json({ error: 'One or more moderator role IDs do not belong to this server or do not exist' });
+        return;
+      }
+    }
+
     const updateData: any = {};
     if (name !== undefined) updateData.name = name.trim();
     if (category_id !== undefined) updateData.category_id = category_id;
     if (position !== undefined) updateData.position = position;
+    if (channel_type !== undefined) updateData.channel_type = channel_type;
+    if (allowed_role_ids !== undefined) updateData.allowed_role_ids = allowed_role_ids;
+    if (moderator_role_ids !== undefined) updateData.moderator_role_ids = moderator_role_ids;
 
     if (Object.keys(updateData).length === 0) {
       res.status(400).json({ error: 'No update data provided' });
@@ -318,7 +404,7 @@ export const updateChannel = async (req: AuthenticatedRequest, res: Response): P
       .update(updateData)
       .eq('id', channel_id)
       .eq('server_id', server_id)
-      .select()
+      .select('id, server_id, name, type, is_private, category_id, position, channel_type, allowed_role_ids, moderator_role_ids')
       .single();
 
     if (error) {

@@ -1125,7 +1125,59 @@ Content-Type: application/json
 
 ---
 
-### 4.2 Get Server Channels
+### 4.2 Edit Channel
+**PUT** `/api/channel/:server_id/channels/:channel_id`
+
+**Headers**:
+```
+Authorization: Bearer <access_token>
+Content-Type: application/json
+```
+
+**URL Parameters**:
+- `server_id` (string, required)
+- `channel_id` (string, required)
+
+**Body**:
+```json
+{
+  "name": "announcements",
+  "category_id": "category-uuid-here",
+  "position": 2,
+  "channel_type": "read_only",
+  "allowed_role_ids": [],
+  "moderator_role_ids": ["role-uuid-here"]
+}
+```
+
+All fields are optional, but at least one must be provided.
+
+**Success Response** (200):
+```json
+{
+  "id": "uuid-here",
+  "server_id": "server-uuid-here",
+  "name": "announcements",
+  "type": "text",
+  "is_private": false,
+  "category_id": "category-uuid-here",
+  "position": 2,
+  "channel_type": "read_only",
+  "allowed_role_ids": [],
+  "moderator_role_ids": ["role-uuid-here"]
+}
+```
+
+**Error Response** (400):
+```json
+{
+  "error": "Invalid channel type. Must be: normal, read_only, or role_restricted"
+}
+```
+
+---
+
+### 4.3 Get Server Channels
 **GET** `/api/channel/:server_id/getChannels`
 
 **Headers**:
@@ -1160,7 +1212,7 @@ Authorization: Bearer <access_token>
 
 ---
 
-### 4.3 Join Channel
+### 4.4 Join Channel
 **POST** `/api/channel/:serverId/joinChannel`
 
 **Headers**:
@@ -1188,7 +1240,7 @@ Content-Type: application/json
 
 ---
 
-### 4.4 Get Channels with Access
+### 4.5 Get Channels with Access
 **GET** `/api/channel/:server_id/channels-with-access`
 
 **Headers**:
@@ -1221,7 +1273,7 @@ Authorization: Bearer <access_token>
 
 ---
 
-### 4.5 Set Channel Role Access
+### 4.6 Set Channel Role Access
 **POST** `/api/channel/:channel_id/role-access`
 
 **Headers**:
@@ -1251,7 +1303,7 @@ Content-Type: application/json
 
 ---
 
-### 4.6 Get Channel Role Access
+### 4.7 Get Channel Role Access
 **GET** `/api/channel/:channel_id/role-access`
 
 **Headers**:
