@@ -117,7 +117,7 @@ export const screation = async (req: AuthenticatedRequest, res: Response): Promi
       });
 
     if (uploadError) {
-      console.error('Supabase storage upload error:', uploadError);
+
       res.status(500).json({ error: 'Image upload failed', details: uploadError.message });
     return     
     }
@@ -138,7 +138,7 @@ export const screation = async (req: AuthenticatedRequest, res: Response): Promi
       .single();
 
     if (userError || !userData) {
-      console.error('User lookup error:', userError);
+
       res.status(404).json({ error: `User not found.`, details: userError?.message });
           return 
     }
@@ -153,7 +153,7 @@ export const screation = async (req: AuthenticatedRequest, res: Response): Promi
 
     if (rpcError) {
       // The RPC handles the transaction, so if it fails, nothing is committed to the DB.
-      console.error('RPC `create_server_with_resources` error:', rpcError);
+
       res.status(500).json({ message: 'Error creating server', details: rpcError.message });
           return 
     }
@@ -172,7 +172,7 @@ export const screation = async (req: AuthenticatedRequest, res: Response): Promi
       });
 
     if (ownerRoleError) {
-      console.error('Error creating owner role:', ownerRoleError);
+
     }
 
     // Create Admin role
@@ -188,7 +188,7 @@ export const screation = async (req: AuthenticatedRequest, res: Response): Promi
       });
 
     if (adminRoleError) {
-      console.error('Error creating admin role:', adminRoleError);
+
     }
 
     // --- 5. Fetch and Return Full Server Data ---
@@ -199,7 +199,7 @@ export const screation = async (req: AuthenticatedRequest, res: Response): Promi
       .single();
 
     if (fetchError) {
-      console.error('Error fetching newly created server:', fetchError);
+
       // The server was created, but we failed to fetch the full object for the response.
       // A 207 status indicates partial success.
       res.status(207).json({ 
@@ -214,7 +214,7 @@ export const screation = async (req: AuthenticatedRequest, res: Response): Promi
     return 
 
   } catch (err) {
-    console.error('Unexpected error in server creation:', err);
+
     const details = err instanceof Error ? err.message : 'An unknown error occurred.';
     res.status(500).json({ message: 'An unexpected error occurred.', details });
     return 
@@ -223,7 +223,7 @@ export const screation = async (req: AuthenticatedRequest, res: Response): Promi
 
 export const getServers = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
-    console.log(req.user);
+
       const userId = req.user?.sub;
 
       if (!userId) {
@@ -260,7 +260,7 @@ export const getServers = async (req: AuthenticatedRequest, res: Response): Prom
 
   } catch (error) {
       const err = error as Error;
-      console.error('Error in getServers controller:', err.message);
+
       res.status(500).json({ error: 'Internal server error.', details: err.message });
   }
 };
@@ -310,7 +310,7 @@ export const joinServer = async (req: AuthenticatedRequest, res: Response): Prom
         });
 
         if (rpcError) {
-            console.error('RPC `join_server_and_assign_member_role` error:', rpcError);
+
             res.status(409).json({ message: 'Failed to join server.', details: rpcError.message });
             return 
           }
@@ -322,7 +322,7 @@ export const joinServer = async (req: AuthenticatedRequest, res: Response): Prom
 
     } catch (error) {
         const err = error as Error;
-        console.error('Error in joinServer controller:', err.message);
+
         res.status(500).json({ error: 'An unexpected internal server error occurred.' });
     }
 };
@@ -414,7 +414,6 @@ interface Invite {
 //     return res.status(500).json({error:" Could not create invite"});
 //   }
 // };
-
 
 
 export const joinWithInvite = async (
@@ -599,7 +598,7 @@ export const joinWithInvite = async (
     });
 
   } catch (err) {
-    console.error(err);
+
     res.status(500).json({
       success: false,
       code: "SERVER_ERROR",
@@ -672,14 +671,14 @@ export const updateServer = async (req: AuthenticatedRequest, res: Response): Pr
         const bucketExists = buckets?.some(bucket => bucket.name === 'server-icons');
         
         if (!bucketExists) {
-          console.log('Creating server-icons bucket...');
+
           const { error: bucketError } = await supabase.storage.createBucket('server-icons', {
             public: true,
             allowedMimeTypes: ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
           });
           
           if (bucketError) {
-            console.error('Failed to create bucket:', bucketError);
+
             // Continue anyway, bucket might exist but not be listed
           }
         }
@@ -692,23 +691,20 @@ export const updateServer = async (req: AuthenticatedRequest, res: Response): Pr
           });
 
         if (uploadError) {
-          console.error('Supabase storage upload error:', uploadError);
+
           res.status(500).json({ error: 'Failed to upload server icon: ' + uploadError.message });
           return;
         }
 
         const { data: urlData } = supabase.storage.from('server-icons').getPublicUrl(filePath);
         updateData.icon_url = urlData?.publicUrl;
-        
-        console.log('File uploaded successfully, URL:', updateData.icon_url);
+
       } catch (fileError) {
-        console.error('File upload error:', fileError);
+
         res.status(500).json({ error: 'File upload failed: ' + (fileError as Error).message });
         return;
       }
     }
-
-    console.log('Updating server with data:', updateData);
 
     const { data: updatedServer, error: updateError } = await supabase
       .from('servers')
@@ -718,16 +714,15 @@ export const updateServer = async (req: AuthenticatedRequest, res: Response): Pr
       .single();
 
     if (updateError) {
-      console.error('Database update error:', updateError);
+
       res.status(500).json({ error: 'Failed to update server: ' + updateError.message });
       return;
     }
 
-    console.log('Server updated successfully:', updatedServer);
     res.status(200).json({ message: 'Server updated successfully', server: updatedServer });
 
   } catch (error) {
-    console.error('Error updating server:', error);
+
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -770,7 +765,7 @@ export const getServerDetails = async (req: AuthenticatedRequest, res: Response)
     res.status(200).json(serverData);
 
   } catch (error) {
-    console.error('Error getting server details:', error);
+
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -830,7 +825,7 @@ export const getServerMembers = async (req: AuthenticatedRequest, res: Response)
       .eq('server_id', serverId);
 
     if (membersError) {
-      console.error('Error fetching server members:', membersError);
+
       res.status(500).json({ error: 'Failed to fetch server members' });
       return;
     }
@@ -860,8 +855,7 @@ export const getServerMembers = async (req: AuthenticatedRequest, res: Response)
 
     // If owner is not in the members list, add them automatically
     if (isOwner && !membersWithRoles.find(member => member.user_id === userId)) {
-      console.log('Server owner not found in members, adding them...');
-      
+
       // Add owner to server_members table
       const { error: addOwnerError } = await supabase
         .from('server_members')
@@ -872,7 +866,7 @@ export const getServerMembers = async (req: AuthenticatedRequest, res: Response)
         });
 
       if (addOwnerError) {
-        console.error('Error adding owner to server members:', addOwnerError);
+
       } else {
         // Fetch the owner's user data
         const { data: ownerUser, error: ownerUserError } = await supabase
@@ -911,7 +905,7 @@ export const getServerMembers = async (req: AuthenticatedRequest, res: Response)
     res.status(200).json(membersWithRoles);
 
   } catch (error) {
-    console.error('Error getting server members:', error);
+
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -1052,7 +1046,7 @@ export const kickMember = async (req: AuthenticatedRequest, res: Response): Prom
     }
 
     if (roleError) {
-      console.error('Error removing user roles:', roleError);
+
     }
 
     //remove from server_members (parent table)
@@ -1063,7 +1057,7 @@ export const kickMember = async (req: AuthenticatedRequest, res: Response): Prom
       .eq('user_id', targetUserId);
 
     if (memberError) {
-      console.error('Error removing server member:', memberError);
+
       res.status(500).json({ error: 'Failed to kick member' });
       return;
     }
@@ -1071,7 +1065,7 @@ export const kickMember = async (req: AuthenticatedRequest, res: Response): Prom
     res.status(200).json({ message: 'Member kicked successfully' });
 
   } catch (error) {
-    console.error('Error kicking member:', error);
+
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -1145,7 +1139,7 @@ export const banMember = async (req: AuthenticatedRequest, res: Response): Promi
       });
 
     if (banError) {
-      console.error('Error adding to ban list:', banError);
+
       res.status(500).json({ error: 'Failed to ban member' });
       return;
     }
@@ -1159,7 +1153,7 @@ export const banMember = async (req: AuthenticatedRequest, res: Response): Promi
     }
 
     if (banRoleError) {
-      console.error('Error removing user roles during ban:', banRoleError);
+
     }
 
     // Remove from server_members (parent table)
@@ -1170,14 +1164,14 @@ export const banMember = async (req: AuthenticatedRequest, res: Response): Promi
       .eq('user_id', targetUserId);
 
     if (deleteError) {
-      console.error('Error removing from server_members:', deleteError);
+
       // Don't fail the request if they're not a member
     }
 
     res.status(200).json({ message: 'Member banned successfully' });
 
   } catch (error) {
-    console.error('Error banning member:', error);
+
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -1225,7 +1219,7 @@ export const leaveServer = async (req: AuthenticatedRequest, res: Response): Pro
     res.status(200).json({ message: 'Left server successfully' });
 
   } catch (error) {
-    console.error('Error leaving server:', error);
+
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -1272,7 +1266,7 @@ export const deleteServer = async (req: AuthenticatedRequest, res: Response): Pr
     res.status(200).json({ message: 'Server deleted successfully' });
 
   } catch (error) {
-    console.error('Error deleting server:', error);
+
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -1301,7 +1295,7 @@ export const getServerInvites = async (req: AuthenticatedRequest, res: Response)
       .eq('is_valid', true);
 
     if (invitesError) {
-      console.error('Error fetching server invites:', invitesError);
+
       res.status(500).json({ error: 'Failed to fetch server invites' });
       return;
     }
@@ -1314,7 +1308,7 @@ export const getServerInvites = async (req: AuthenticatedRequest, res: Response)
     );
 
   } catch (error) {
-    console.error('Error getting server invites:', error);
+
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -1351,7 +1345,7 @@ export const deleteInvite = async (req: AuthenticatedRequest, res: Response): Pr
     res.status(200).json({ message: 'Invite revoked successfully' });
 
   } catch (error) {
-    console.error('Error deleting invite:', error);
+
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -1433,7 +1427,7 @@ export const createServerInvite = async (req: AuthenticatedRequest, res: Respons
       .single();
 
     if (inviteError) {
-      console.error('Error creating invite:', inviteError);
+
       res.status(500).json({ error: 'Failed to create invite' });
       return;
     }
@@ -1449,7 +1443,7 @@ export const createServerInvite = async (req: AuthenticatedRequest, res: Respons
     });
 
   } catch (error) {
-    console.error('Error creating server invite:', error);
+
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -1484,7 +1478,7 @@ export const searchUsersByUsername = async (req: AuthenticatedRequest, res: Resp
     res.status(200).json(users || []);
 
   } catch (error) {
-    console.error('Error searching users:', error);
+
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -1544,7 +1538,7 @@ export const addUserToServer = async (req: AuthenticatedRequest, res: Response):
       .single();
 
     if (memberCheckError && memberCheckError.code !== 'PGRST116') {
-      console.error('Error checking existing membership:', memberCheckError);
+
       res.status(500).json({ error: 'Failed to check membership status' });
       return;
     }
@@ -1577,7 +1571,7 @@ export const addUserToServer = async (req: AuthenticatedRequest, res: Response):
     }
 
     if (cleanupError) {
-      console.error('Error cleaning up orphaned user_roles:', cleanupError);
+
     }
 
     // Add user to server using the RPC function
@@ -1587,7 +1581,7 @@ export const addUserToServer = async (req: AuthenticatedRequest, res: Response):
     });
 
     if (rpcError) {
-      console.error('RPC Error adding user to server:', rpcError);
+
       res.status(500).json({ 
         error: 'Failed to add user to server',
         details: rpcError.message 
@@ -1601,7 +1595,7 @@ export const addUserToServer = async (req: AuthenticatedRequest, res: Response):
     });
 
   } catch (error) {
-    console.error('Error adding user to server:', error);
+
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -1738,7 +1732,7 @@ export const transferOwnership = async (req: AuthenticatedRequest, res: Response
         }
       }
     } catch (roleSyncError) {
-      console.error('Ownership transfer role sync warning:', roleSyncError);
+
       roleSyncWarning = 'Ownership changed, but role sync was partially unsuccessful.';
     }
 
@@ -1750,7 +1744,7 @@ export const transferOwnership = async (req: AuthenticatedRequest, res: Response
     });
 
   } catch (error) {
-    console.error('Error transferring ownership:', error);
+
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -1793,7 +1787,7 @@ export const getBannedUsers = async (req: AuthenticatedRequest, res: Response): 
       .eq('server_id', serverId);
 
     if (banError) {
-      console.error('Error fetching banned users:', banError);
+
       res.status(500).json({ error: 'Failed to fetch banned users' });
       return;
     }
@@ -1830,7 +1824,7 @@ export const getBannedUsers = async (req: AuthenticatedRequest, res: Response): 
     res.status(200).json(bannedUsersWithDetails);
 
   } catch (error) {
-    console.error('Error getting banned users:', error);
+
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -1887,7 +1881,7 @@ export const unbanUser = async (req: AuthenticatedRequest, res: Response): Promi
       .eq('user_id', targetUserId);
 
     if (unbanError) {
-      console.error('Error unbanning user:', unbanError);
+
       res.status(500).json({ error: 'Failed to unban user' });
       return;
     }
@@ -1895,7 +1889,7 @@ export const unbanUser = async (req: AuthenticatedRequest, res: Response): Promi
     res.status(200).json({ message: 'User unbanned successfully' });
 
   } catch (error) {
-    console.error('Error unbanning user:', error);
+
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -1913,7 +1907,6 @@ export const getServerMembersWithVoicePresence = async (req: AuthenticatedReques
 
     // Import voice socket maps - dynamic import to avoid circular dependencies
     const { channelUsers, voiceStates } = await import('../sockets/voiceSocket');
-    const { userSocketMap } = await import('../sockets/chatSocket');
 
     // Check if user is the server owner or a member of the server
     const { data: serverData, error: serverError } = await supabase
@@ -1954,13 +1947,14 @@ export const getServerMembersWithVoicePresence = async (req: AuthenticatedReques
           id,
           username,
           fullname,
-          avatar_url
+          avatar_url,
+          status
         )
       `)
       .eq('server_id', serverId);
 
     if (membersError) {
-      console.error('Error fetching server members:', membersError);
+
       res.status(500).json({ error: 'Failed to fetch server members' });
       return;
     }
@@ -1973,7 +1967,7 @@ export const getServerMembersWithVoicePresence = async (req: AuthenticatedReques
       .eq('type', 'voice');
 
     if (channelsError) {
-      console.error('Error fetching voice channels:', channelsError);
+
     }
 
     const channelMap = new Map<string, string>();
@@ -2008,10 +2002,6 @@ export const getServerMembersWithVoicePresence = async (req: AuthenticatedReques
       const user = member.users;
       const userIdFromMember = member.user_id;
       
-      // Check if user is online (has an active socket connection)
-      const socketId = userSocketMap.get(userIdFromMember);
-      const isOnline = !!socketId;
-      
       // Get voice channel info if user is in a voice channel
       const voiceChannel = userVoicePresence.get(userIdFromMember);
 
@@ -2020,7 +2010,7 @@ export const getServerMembersWithVoicePresence = async (req: AuthenticatedReques
         username: user?.username || 'Unknown',
         fullname: user?.fullname || user?.username || 'Unknown',
         avatar_url: user?.avatar_url || null,
-        status: isOnline ? 'online' : 'offline',
+        status: user?.status || 'offline',
         voice_channel: voiceChannel || null
       };
     });
@@ -2028,7 +2018,7 @@ export const getServerMembersWithVoicePresence = async (req: AuthenticatedReques
     res.status(200).json(membersWithVoicePresence);
 
   } catch (error) {
-    console.error('Error getting server members with voice presence:', error);
+
     res.status(500).json({ error: 'Internal server error' });
   }
 };

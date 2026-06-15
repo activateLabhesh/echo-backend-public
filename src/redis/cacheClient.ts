@@ -10,7 +10,7 @@ export const getCacheRedisClient = (): Redis => {
     });
 
     cacheRedisClient.on('error', (error) => {
-      console.error('[cacheRedisClient] Redis error:', error);
+
     });
   }
 

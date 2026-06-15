@@ -1,6 +1,7 @@
 import { supabase } from '../client/supabase'; // Make sure this path is correct
 import Crypto from 'crypto'; 
 import { parseMentions, resolveMentions, processMentions } from './mentionParser';
+import { extractGifMediaUrl } from './messageMedia';
 
 // This is the data our function needs to save a message
 export interface MessageData {
@@ -16,6 +17,9 @@ export interface MessageData {
  */
 export const saveMessage = async (data: MessageData) => {
   const id = Crypto.randomUUID(); // Generate a unique ID for the message 
+  const gifMediaUrl = extractGifMediaUrl(data.content);
+  const content = gifMediaUrl ? '' : data.content;
+  const mediaUrl = data.media_url || gifMediaUrl;
 
   // console.log('Saving message:', { id, content: data.content, channel_id: data.channel_id });
 
@@ -23,10 +27,10 @@ export const saveMessage = async (data: MessageData) => {
     .from('messages')
     .insert({
       id: id,
-      content: data.content,
+      content,
       channel_id: data.channel_id,
       sender_id: data.sender_id,
-      media_url: data.media_url || null, // Handle optional file URL
+      media_url: mediaUrl || null, // Handle optional file URL or GIF URL
       is_edited: false,
     })
     .select(`
@@ -40,7 +44,7 @@ export const saveMessage = async (data: MessageData) => {
     .single(); // We expect just one row back
 
   if (error) {
-    console.error('Database Error:', error);
+
     throw new Error('Could not save the message.'); // Throw an error if it fails
   }
 
@@ -53,7 +57,7 @@ export const saveMessage = async (data: MessageData) => {
 
   // Process mentions in the background
   try {
-    const { mentions } = parseMentions(data.content);
+    const { mentions } = parseMentions(content);
     if (mentions.length > 0) {
       // console.log('Found mentions in message:', mentions);
       const resolvedMentions = await resolveMentions(mentions, data.channel_id);
@@ -62,7 +66,7 @@ export const saveMessage = async (data: MessageData) => {
           enrichedMessage.id,
           data.channel_id,
           data.sender_id,
-          data.content,
+          content,
           resolvedMentions
         );
       }

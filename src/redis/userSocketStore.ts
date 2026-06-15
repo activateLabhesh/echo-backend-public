@@ -1,7 +1,7 @@
 /**
- * Redis-backed user -> socketId mapping for cross-instance DM delivery.
+ * Redis-backed user -> socketId set for cross-instance DM delivery and presence.
  * With multiple backend instances (e.g. ECS), each instance has its own in-memory map.
- * Storing in Redis allows any instance to look up any user's socketId.
+ * Storing in Redis allows any instance to look up any user's active socket(s).
  */
 
 import { createClient, RedisClientType } from "redis";
@@ -25,18 +25,40 @@ async function getClient(): Promise<RedisClientType> {
 export async function setUserSocket(userId: string, socketId: string): Promise<void> {
   const client = await getClient();
   const key = `${KEY_PREFIX}${userId}`;
-  await client.setEx(key, DEFAULT_TTL_SEC, socketId);
+  await client.sAdd(key, socketId);
+  await client.expire(key, DEFAULT_TTL_SEC);
 }
 
 export async function getUserSocket(userId: string): Promise<string | null> {
   const client = await getClient();
   const key = `${KEY_PREFIX}${userId}`;
-  const val = await client.get(key);
-  return val;
+  const members = await client.sMembers(key);
+  return members[0] || null;
 }
 
-export async function deleteUserSocket(userId: string): Promise<void> {
+export async function getUserSocketCount(userId: string): Promise<number> {
   const client = await getClient();
   const key = `${KEY_PREFIX}${userId}`;
-  await client.del(key);
+  return client.sCard(key);
+}
+
+export async function deleteUserSocket(userId: string, socketId?: string): Promise<number> {
+  const client = await getClient();
+  const key = `${KEY_PREFIX}${userId}`;
+
+  if (socketId) {
+    await client.sRem(key, socketId);
+  } else {
+    await client.del(key);
+    return 0;
+  }
+
+  const remaining = await client.sCard(key);
+  if (remaining === 0) {
+    await client.del(key);
+  } else {
+    await client.expire(key, DEFAULT_TTL_SEC);
+  }
+
+  return remaining;
 }

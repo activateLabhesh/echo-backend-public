@@ -19,19 +19,19 @@ const S3_CONFIG = {
 // Check and create buckets if they don't exist
 export const checkBucketConnection = async () => {
   try {
-    console.log('Checking storage connection...');
+
     const { data: buckets, error } = await supabaseAdmin.storage.listBuckets();
     
     if (error) {
-      console.error('Error listing buckets:', error.message);
+
       return false;
     }
     const existingBuckets = buckets?.map((b: Bucket) => b.name) || [];
-    console.log('Existing buckets:', existingBuckets.join(', '));
-    console.log('Storage buckets check completed');
+
+
     return true;
   } catch (error) {
-    console.error('Failed to connect to storage buckets:', error);
+
     return false;
   }
 };
@@ -62,7 +62,7 @@ export const uploadFile = async (
 
     return { data, publicUrl };
   } catch (error) {
-    console.error(`Error uploading file to ${bucket}:`, error);
+
     throw error;
   }
 };
@@ -77,7 +77,7 @@ export const deleteFile = async (bucket: keyof typeof BUCKETS, path: string) => 
     if (error) throw error;
     return true;
   } catch (error) {
-    console.error(`Error deleting file from ${bucket}:`, error);
+
     throw error;
   }
 };

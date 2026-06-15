@@ -31,7 +31,7 @@ export const add_friend = async (req: AuthenticatedRequest, res: Response): Prom
             .maybeSingle();
 
         if (existingError && existingError.code !== 'PGRST116') {
-            console.error("Error checking for existing friend request:", existingError);
+
             res.status(500).json({ message: "Error checking for existing friend request." });
             return;
         }
@@ -57,7 +57,7 @@ export const add_friend = async (req: AuthenticatedRequest, res: Response): Prom
             });
 
         if (insertError) {
-            console.error("Error sending friend request:", insertError);
+
             res.status(500).json({ message: "Failed to send friend request." });
             return;
         }
@@ -96,7 +96,7 @@ export const get_friend_requests = async (req: AuthenticatedRequest, res: Respon
             .eq('status', 'pending');
 
         if (error) {
-            console.error("Error fetching friend requests:", error);
+
             res.status(500).json({ message: "Failed to fetch friend requests." });
             return;
         }
@@ -153,7 +153,7 @@ export const respond_to_friend_request = async (req: AuthenticatedRequest, res: 
             .eq('friends_id', requestId);
 
         if (updateError) {
-            console.error("Error updating friend request:", updateError);
+
             res.status(500).json({ message: "Failed to update friend request." });
             return;
         }
@@ -173,7 +173,7 @@ export const respond_to_friend_request = async (req: AuthenticatedRequest, res: 
 
             // 23505 = unique violation → thread already exists (OK)
             if (error && error.code !== '23505') {
-                console.error('Error creating DM thread:', error)
+
                 throw error
             }
         }
@@ -219,7 +219,7 @@ export const fetch_friends = async (req: AuthenticatedRequest, res: Response): P
             .or(`user1_id.eq.${userId},user2_id.eq.${userId}`);
 
         if (error) {
-            console.error("Error fetching friends:", error);
+
             res.status(500).json({ message: "Failed to fetch friends." });
             return;
         }
@@ -271,7 +271,7 @@ export const search_friends = async (req: AuthenticatedRequest, res: Response): 
             .limit(10);
 
         if (usersError) {
-            console.error("Error searching users:", usersError);
+
             res.status(500).json({ message: "Failed to search users." });
             return;
         }
@@ -292,7 +292,7 @@ export const search_friends = async (req: AuthenticatedRequest, res: Response): 
             .or(`user1_id.eq.${userId},user2_id.eq.${userId}`);
 
         if (friendsError) {
-            console.error("Error fetching friend status:", friendsError);
+
             res.status(500).json({ message: "Failed to fetch friend status." });
             return;
         }
@@ -316,7 +316,63 @@ export const search_friends = async (req: AuthenticatedRequest, res: Response): 
         res.status(200).json(results);
 
     } catch (error) {
-        console.error("Error in search_friends:", error);
+
+        res.status(500).json({ message: "An unexpected error occurred." });
+    }
+};
+
+export const unfriend = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+    const userId = req.user?.sub;
+    const { friendId } = req.params;
+
+    if (!userId) {
+        res.status(401).json({ message: "Unauthorized. Please log in." });
+        return;
+    }
+
+    if (!friendId) {
+        res.status(400).json({ message: "Friend ID is required." });
+        return;
+    }
+
+    if (userId === friendId) {
+        res.status(400).json({ message: "You cannot unfriend yourself." });
+        return;
+    }
+
+    try {
+        const { data: friendship, error: friendshipError } = await supabase
+            .from('friends')
+            .select('friends_id')
+            .eq('status', 'accepted')
+            .or(`and(user1_id.eq.${userId},user2_id.eq.${friendId}),and(user1_id.eq.${friendId},user2_id.eq.${userId})`)
+            .maybeSingle();
+
+        if (friendshipError && friendshipError.code !== 'PGRST116') {
+
+            res.status(500).json({ message: "Failed to find friendship." });
+            return;
+        }
+
+        if (!friendship) {
+            res.status(404).json({ message: "Friendship not found." });
+            return;
+        }
+
+        const { error: deleteError } = await supabase
+            .from('friends')
+            .delete()
+            .eq('friends_id', friendship.friends_id);
+
+        if (deleteError) {
+
+            res.status(500).json({ message: "Failed to remove friendship." });
+            return;
+        }
+
+        res.status(200).json({ message: "Friend removed successfully." });
+    } catch (error) {
+
         res.status(500).json({ message: "An unexpected error occurred." });
     }
 };

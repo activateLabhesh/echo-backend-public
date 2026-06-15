@@ -191,7 +191,7 @@ export const getMentions = async (req: AuthenticatedRequest, res: Response): Pro
     // console.log('Found', userNotifications?.length || 0, 'notifications for user');
     
     if (userError) {
-      console.error('Error fetching user notifications:', userError);
+
       throw userError;
     }
 
@@ -247,7 +247,7 @@ export const getMentions = async (req: AuthenticatedRequest, res: Response): Pro
       .limit(normalizedLimit);
 
     if (detailError) {
-      console.error('Error fetching detailed notifications:', detailError);
+
       // console.error('Error details:', JSON.stringify(detailError, null, 2));
       
       // If the complex query fails, let's try to build the data manually
@@ -269,7 +269,7 @@ export const getMentions = async (req: AuthenticatedRequest, res: Response): Pro
         return;
         
       } catch (manualError) {
-        console.error('Manual data fetch also failed:', manualError);
+
         // Final fallback - return basic notifications
         res.json(userNotifications.slice(0, normalizedLimit));
         return;
@@ -303,7 +303,7 @@ export const getMentions = async (req: AuthenticatedRequest, res: Response): Pro
     // console.log('Sending transformed notifications:', transformedNotifications.length);
     res.json(transformedNotifications);
   } catch (error) {
-    console.error('Failed to get mentions:', error);
+
     res.status(500).json({ error: 'Failed to fetch mentions' });
   }
 };
@@ -328,7 +328,7 @@ export const markMentionAsRead = async (req: AuthenticatedRequest, res: Response
       .eq('user_id', userId);
 
     if (error) {
-      console.error('Error marking as read:', error);
+
       throw error;
     }
 
@@ -339,13 +339,13 @@ export const markMentionAsRead = async (req: AuthenticatedRequest, res: Response
       .eq('id', mentionId)
       .eq('user_id', userId);
     if (deleteError) {
-      console.error('Error deleting notification:', deleteError);
+
     }
 
     // console.log('Mention marked as read successfully');
     res.json({ success: true });
   } catch (error) {
-    console.error('Failed to mark mention as read:', error);
+
     res.status(500).json({ error: 'Failed to update mention' });
   }
 };
@@ -370,7 +370,7 @@ export const markAllMentionsAsRead = async (req: AuthenticatedRequest, res: Resp
       .select('id');
 
     if (error) {
-      console.error('Error marking all as read:', error);
+
       throw error;
     }
 
@@ -381,7 +381,7 @@ export const markAllMentionsAsRead = async (req: AuthenticatedRequest, res: Resp
       .eq('user_id', userId)
       .eq('is_read', true);
     if (deleteAllError) {
-      console.error('Error deleting all read notifications:', deleteAllError);
+
     }
 
     const updatedCount = data?.length || 0;
@@ -393,7 +393,7 @@ export const markAllMentionsAsRead = async (req: AuthenticatedRequest, res: Resp
       markedIds: data?.map(item => item.id) || []
     });
   } catch (error) {
-    console.error('Failed to mark all mentions as read:', error);
+
     res.status(500).json({ error: 'Failed to update mentions' });
   }
 };
@@ -423,7 +423,7 @@ export const searchMentionable = async (req: AuthenticatedRequest, res: Response
     const { data: members, error: membersError } = await membersQuery;
 
     if (membersError) {
-      console.error('Error fetching server members:', membersError);
+
       res.json(results);
       return;
     }
@@ -451,7 +451,7 @@ export const searchMentionable = async (req: AuthenticatedRequest, res: Response
       .limit(query && query.length > 0 ? 10 : 15);
 
     if (usersError) {
-      console.error('Error fetching users:', usersError);
+
       res.json(results);
       return;
     }
@@ -461,7 +461,7 @@ export const searchMentionable = async (req: AuthenticatedRequest, res: Response
 
     res.json(results);
   } catch (error) {
-    console.error('Failed to search mentionable:', error);
+
     res.status(500).json({ error: 'Failed to search' });
   }
 };

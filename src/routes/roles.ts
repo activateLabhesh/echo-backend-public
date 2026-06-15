@@ -1,6 +1,5 @@
 // At the very top of your roleRoutes.ts file
-console.log("--- roleRoutes.ts file has been loaded by the server ---");
- 
+
 import {
   getRoleDetailsWithPermissions,
   addRole, 

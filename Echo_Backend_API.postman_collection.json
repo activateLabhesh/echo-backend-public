@@ -952,6 +952,31 @@
 					}
 				},
 				{
+					"name": "Edit Channel",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{ACCESS_TOKEN}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"announcements\",\n  \"category_id\": \"category-uuid-here\",\n  \"position\": 2,\n  \"channel_type\": \"read_only\",\n  \"allowed_role_ids\": [],\n  \"moderator_role_ids\": [\"role-uuid-here\"]\n}"
+						},
+						"url": {
+							"raw": "{{BASE_URL}}/api/channel/{{SERVER_ID}}/channels/{{CHANNEL_ID}}",
+							"host": ["{{BASE_URL}}"],
+							"path": ["api", "channel", "{{SERVER_ID}}", "channels", "{{CHANNEL_ID}}"]
+						}
+					}
+				},
+				{
 					"name": "Get Server Channels",
 					"request": {
 						"method": "GET",
@@ -1296,6 +1321,332 @@
 							"raw": "{{BASE_URL}}/api/message/thread/{{THREAD_ID}}/mark-read",
 							"host": ["{{BASE_URL}}"],
 							"path": ["api", "message", "thread", "{{THREAD_ID}}", "mark-read"]
+						}
+					}
+				},
+				{
+					"name": "React to Channel Message",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{ACCESS_TOKEN}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"message_id\": \"{{MESSAGE_ID}}\",\n  \"emoji\": \"👍\"\n}"
+						},
+						"url": {
+							"raw": "{{BASE_URL}}/api/message/reactions",
+							"host": ["{{BASE_URL}}"],
+							"path": ["api", "message", "reactions"]
+						}
+					}
+				},
+				{
+					"name": "React to DM Message",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{ACCESS_TOKEN}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"dm_message_id\": \"{{DM_MESSAGE_ID}}\",\n  \"emoji\": \"❤️\"\n}"
+						},
+						"url": {
+							"raw": "{{BASE_URL}}/api/message/reactions",
+							"host": ["{{BASE_URL}}"],
+							"path": ["api", "message", "reactions"]
+						}
+					}
+				},
+				{
+					"name": "Remove Channel Reaction",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{ACCESS_TOKEN}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"message_id\": \"{{MESSAGE_ID}}\",\n  \"emoji\": \"👍\"\n}"
+						},
+						"url": {
+							"raw": "{{BASE_URL}}/api/message/reactions",
+							"host": ["{{BASE_URL}}"],
+							"path": ["api", "message", "reactions"]
+						}
+					}
+				},
+				{
+					"name": "Remove DM Reaction",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{ACCESS_TOKEN}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"dm_message_id\": \"{{DM_MESSAGE_ID}}\",\n  \"emoji\": \"❤️\"\n}"
+						},
+						"url": {
+							"raw": "{{BASE_URL}}/api/message/reactions",
+							"host": ["{{BASE_URL}}"],
+							"path": ["api", "message", "reactions"]
+						}
+					}
+				},
+				{
+					"name": "Get Message Reactions",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{ACCESS_TOKEN}}"
+							}
+						],
+						"url": {
+							"raw": "{{BASE_URL}}/api/message/reactions?message_id={{MESSAGE_ID}}",
+							"host": ["{{BASE_URL}}"],
+							"path": ["api", "message", "reactions"],
+							"query": [
+								{
+									"key": "message_id",
+									"value": "{{MESSAGE_ID}}"
+								}
+							]
+						}
+					}
+				},
+				{
+					"name": "Search Channel Messages",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{ACCESS_TOKEN}}"
+							}
+						],
+						"url": {
+							"raw": "{{BASE_URL}}/api/message/search/server/{{SERVER_ID}}?q=hello",
+							"host": ["{{BASE_URL}}"],
+							"path": ["api", "message", "search", "server", "{{SERVER_ID}}"],
+							"query": [
+								{
+									"key": "q",
+									"value": "hello"
+								}
+							]
+						}
+					}
+				},
+				{
+					"name": "Search DM Messages",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{ACCESS_TOKEN}}"
+							}
+						],
+						"url": {
+							"raw": "{{BASE_URL}}/api/message/search/dm/{{THREAD_ID}}?q=hello",
+							"host": ["{{BASE_URL}}"],
+							"path": ["api", "message", "search", "dm", "{{THREAD_ID}}"],
+							"query": [
+								{
+									"key": "q",
+									"value": "hello"
+								}
+							]
+						}
+					}
+				},
+				{
+					"name": "Get Channel Media",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{ACCESS_TOKEN}}"
+							}
+						],
+						"url": {
+							"raw": "{{BASE_URL}}/api/message/media/server/{{SERVER_ID}}",
+							"host": ["{{BASE_URL}}"],
+							"path": ["api", "message", "media", "server", "{{SERVER_ID}}"]
+						}
+					}
+				},
+				{
+					"name": "Get DM Media",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{ACCESS_TOKEN}}"
+							}
+						],
+						"url": {
+							"raw": "{{BASE_URL}}/api/message/media/dm/{{THREAD_ID}}",
+							"host": ["{{BASE_URL}}"],
+							"path": ["api", "message", "media", "dm", "{{THREAD_ID}}"]
+						}
+					}
+				},
+				{
+					"name": "Get Pinned Messages",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{ACCESS_TOKEN}}"
+							}
+						],
+						"url": {
+							"raw": "{{BASE_URL}}/api/message/pins?channel_id={{CHANNEL_ID}}",
+							"host": ["{{BASE_URL}}"],
+							"path": ["api", "message", "pins"],
+							"query": [
+								{
+									"key": "channel_id",
+									"value": "{{CHANNEL_ID}}"
+								}
+							]
+						}
+					}
+				},
+				{
+					"name": "Pin Channel Message",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{ACCESS_TOKEN}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"message_id\": \"{{MESSAGE_ID}}\"\n}"
+						},
+						"url": {
+							"raw": "{{BASE_URL}}/api/message/pins",
+							"host": ["{{BASE_URL}}"],
+							"path": ["api", "message", "pins"]
+						}
+					}
+				},
+				{
+					"name": "Pin DM Message",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{ACCESS_TOKEN}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"dm_message_id\": \"{{DM_MESSAGE_ID}}\"\n}"
+						},
+						"url": {
+							"raw": "{{BASE_URL}}/api/message/pins",
+							"host": ["{{BASE_URL}}"],
+							"path": ["api", "message", "pins"]
+						}
+					}
+				},
+				{
+					"name": "Unpin Channel Message",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{ACCESS_TOKEN}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"message_id\": \"{{MESSAGE_ID}}\"\n}"
+						},
+						"url": {
+							"raw": "{{BASE_URL}}/api/message/pins",
+							"host": ["{{BASE_URL}}"],
+							"path": ["api", "message", "pins"]
+						}
+					}
+				},
+				{
+					"name": "Unpin DM Message",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{ACCESS_TOKEN}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"dm_message_id\": \"{{DM_MESSAGE_ID}}\"\n}"
+						},
+						"url": {
+							"raw": "{{BASE_URL}}/api/message/pins",
+							"host": ["{{BASE_URL}}"],
+							"path": ["api", "message", "pins"]
 						}
 					}
 				}

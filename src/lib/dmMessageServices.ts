@@ -1,4 +1,5 @@
 import { supabase } from '../client/supabase';
+import { extractGifMediaUrl } from './messageMedia';
 
 // Interface for the data required to save a DM
 // It now expects thread_id to be provided directly.
@@ -34,6 +35,10 @@ const normalizeMediaUrls = (mediaUrl: unknown): string[] => {
  * @param data - The message data including the thread_id, sender, and content.
  */
 export const saveDMMessage = async (data: DMmessageData) => {
+  const gifMediaUrl = extractGifMediaUrl(data.message);
+  const message = gifMediaUrl ? '' : data.message;
+  const mediaUrl = data.media_url || gifMediaUrl;
+
   // 1. Generate a unique ID for the message itself
 
   // 2. Insert the data into the 'dm_messages' table with the correct fields
@@ -42,9 +47,9 @@ export const saveDMMessage = async (data: DMmessageData) => {
     .insert({
       thread_id: data.threadId, // Use the thread_id passed in the data object
       sender_id: data.senderId,
-      content: data.message,
+      content: message,
       // Use the provided media_url or default to null if it's not present
-      media_url: data.media_url || null,
+      media_url: mediaUrl || null,
     })
     .select(`
       *,
@@ -57,12 +62,12 @@ export const saveDMMessage = async (data: DMmessageData) => {
     .single();
 
   if (error) {
-    console.error('Database Error:', error);
+
     throw new Error('Could not save the direct message.');
   }
 
-  if(data.media_url){
-    console.log("media receved. ", data.media_url);
+  if (mediaUrl) {
+
   }
 
   // Flatten sender info for frontend consistency (matches REST API response structure)

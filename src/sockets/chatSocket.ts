@@ -4,6 +4,8 @@ import { supabase } from "../client/supabase";
 import { checkChannelSendPermission } from "../controllers/channelController";
 import { saveDMMessage } from "../lib/dmMessageServices";
 import { saveMessage } from "../lib/messageServices";
+import { extractGifMediaUrl } from "../lib/messageMedia";
+import { markUserOffline, markUserOnline } from "../lib/userPresence";
 import { sendChannelPushNotification, sendDmPushNotification } from "../lib/pushNotificationService";
 import { deleteUserSocket, getUserSocket, setUserSocket } from "../redis/userSocketStore";
 
@@ -13,9 +15,6 @@ let ioInstance: Server | null = null;
 
 export const setIO = (io: Server) => {
   ioInstance = io;
-  // if(ioInstance === io){
-  //   console.log("IO instance set successfully.");
-  // }
 };
 
 export const getIO = (): Server => {
@@ -28,7 +27,6 @@ export const setupChatSocket = (io: Server) => {
     const token = socket.handshake.auth?.token;
     const clientUserId = socket.handshake.auth?.userId; // Backward compatibility
 
-    console.log(`[chatSocket] Connection attempt: socket=${socket.id} hasToken=${!!token} hasUserId=${!!clientUserId}`);
 
     let userId: string | null = null;
 
@@ -49,7 +47,6 @@ export const setupChatSocket = (io: Server) => {
           }
         } else {
           userId = data.user.id;
-          console.log(`[chatSocket] Socket ${socket.id} authenticated via token for user ${userId}`);
         }
       } catch (err: any) {
         console.error(`[chatSocket] Token verification error for socket ${socket.id}:`, err?.message || err);
@@ -81,11 +78,26 @@ export const setupChatSocket = (io: Server) => {
     setUserSocket(userId as string, socket.id).catch((err) =>
       console.error("[chatSocket] Failed to set userSocket in Redis:", err)
     );
+    markUserOnline(userId as string).catch((err) =>
+      console.error("[chatSocket] Failed to mark user online:", err)
+    );
+
+    socket.on("presence:heartbeat", async () => {
+      const activeUserId = socket.data.userId as string | undefined;
+      if (!activeUserId) return;
+
+      try {
+        await setUserSocket(activeUserId, socket.id);
+        await markUserOnline(activeUserId);
+        socket.emit("presence:heartbeat_ack", { status: "online", timestamp: new Date().toISOString() });
+      } catch (error) {
+        console.error("[chatSocket] Failed to process presence heartbeat:", error);
+      }
+    });
 
     // chat for channel 
     socket.on("join_room", (channelId: string) => {
       socket.join(channelId);
-      // console.log(`User ${socket.id} joined chat room ${channelId}`);
     });
 
 
@@ -128,10 +140,12 @@ export const setupChatSocket = (io: Server) => {
         // 2. payload from services that we use to save the data..
         // Using verifiedSenderId instead of data.senderId for security
         // Save the message to the database
+        const gifMediaUrl = extractGifMediaUrl(data.content);
         const savedMessage = await saveMessage({
-          content: data.content,
+          content: gifMediaUrl ? '' : data.content,
           channel_id: data.channelId,
           sender_id: verifiedSenderId,
+          media_url: gifMediaUrl,
         });
 
         // Add tempId to the saved message for frontend matching
@@ -145,7 +159,11 @@ export const setupChatSocket = (io: Server) => {
         socket.to(data.channelId).emit('new_message', savedMessage);
 
         // Fire-and-forget: push notification to offline channel members
-        sendChannelPushNotification(verifiedSenderId, data.channelId, data.content).catch(console.error);
+        sendChannelPushNotification(
+          verifiedSenderId,
+          data.channelId,
+          gifMediaUrl ? '' : data.content
+        ).catch(console.error);
 
       } catch (error) {
         // If an error occurs, log it and notify the sender
@@ -163,7 +181,6 @@ export const setupChatSocket = (io: Server) => {
       media_urls?: string[];
       tempId?: string;
     }) => {
-      console.log('Received DM payload:', dmPayload);
       // Use server-verified userId instead of client-provided senderId
       const verifiedSenderId = socket.data.userId;
       const { senderId, receiverId, message, media_url, media_urls, tempId } = dmPayload;
@@ -175,9 +192,11 @@ export const setupChatSocket = (io: Server) => {
       }
 
       const normalizedMessage = (message || '').trim();
+      const gifMediaUrl = extractGifMediaUrl(normalizedMessage);
       const normalizedMediaUrls = [
         ...(Array.isArray(media_urls) ? media_urls : []),
         ...(typeof media_url === 'string' && media_url.trim() ? [media_url.trim()] : []),
+        ...(gifMediaUrl ? [gifMediaUrl] : []),
       ].filter((item) => typeof item === 'string' && item.trim().length > 0);
 
       if (!receiverId || (!normalizedMessage && normalizedMediaUrls.length === 0)) {
@@ -195,7 +214,6 @@ export const setupChatSocket = (io: Server) => {
 
       try {
         // STEP 1: Correctly find or create the thread ID using persistent User IDs.
-        // console.log(`Processing DM from ${verifiedSenderId} to ${receiverId}`);
         let threadId: string;
 
         // Sort the actual user IDs to ensure the thread is always found regardless of who sent the first message.
@@ -211,10 +229,8 @@ export const setupChatSocket = (io: Server) => {
         // STEP 2: Handle both existing and new threads.
         if (existingThread) {
           threadId = existingThread.id;
-          // console.log(`Found existing DM thread ${threadId} for users ${user1_id} and ${user2_id}`);
         } else {
           // If the thread doesn't exist, create it.
-          // console.log(`Creating new DM thread for users ${user1_id} and ${user2_id}`);
           const { data: newThread, error: newThreadError } = await supabase
             .from('dm_threads')
             .insert({ user1_id, user2_id })
@@ -225,7 +241,6 @@ export const setupChatSocket = (io: Server) => {
             throw newThreadError;
           }
           threadId = newThread.id;
-          // console.log(`Created new DM thread ${threadId}`);
         }
 
         // STEP 3: Save the message using the determined threadId.
@@ -241,10 +256,8 @@ export const setupChatSocket = (io: Server) => {
               : JSON.stringify(normalizedMediaUrls),
           threadId: threadId
         };
-        // console.log('Saving DM message with payload:', extendedDmPayload);
 
         const savedDm = await saveDMMessage(extendedDmPayload);
-        // console.log('DM saved successfully:', savedDm);
 
         // STEP 4: Emit to the recipient (if online) and send confirmation to the sender.
         // Include tempId for optimistic UI matching
@@ -252,14 +265,12 @@ export const setupChatSocket = (io: Server) => {
 
         // Send confirmation to sender for optimistic UI update
         socket.emit("dm_confirmed", savedDmWithTempId);
-        console.log(`DM confirmed to sender ${verifiedSenderId} with tempId ${tempId}`);
         // Send to recipient (if online) - check local map first, then Redis for cross-instance
         let receiverSocketId = userSocketMap.get(receiverId);
         if (!receiverSocketId) {
           receiverSocketId = (await getUserSocket(receiverId)) || undefined;
         }
         if (receiverSocketId) {
-          console.log(`[chatSocket] Emitting receive_dm to receiver ${receiverId} at socket ${receiverSocketId}`);
           io.to(receiverSocketId).emit("receive_dm", savedDm);
         } else {
           console.warn(`[chatSocket] Receiver ${receiverId} not found (local or Redis) - cannot deliver receive_dm in real time`);
@@ -282,12 +293,20 @@ export const setupChatSocket = (io: Server) => {
     socket.on("disconnect", () => {
       const uid = socket.data.userId as string | undefined;
       if (uid) {
-        userSocketMap.delete(uid);
-        deleteUserSocket(uid).catch((err) =>
-          console.error("[chatSocket] Failed to delete userSocket from Redis:", err)
-        );
+        if (userSocketMap.get(uid) === socket.id) {
+          userSocketMap.delete(uid);
+        }
+
+        deleteUserSocket(uid, socket.id)
+          .then(async (remainingSockets) => {
+            if (remainingSockets === 0) {
+              await markUserOffline(uid);
+            }
+          })
+          .catch((err) =>
+            console.error("[chatSocket] Failed to delete userSocket from Redis:", err)
+          );
       }
     });
   });
 };
-

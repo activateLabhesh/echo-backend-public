@@ -21,16 +21,14 @@ export const submitContactForm = async (
       // .select();
 
     if (error) {
-      console.error("Supabase insert error:", error);
+
       res.status(500).json({ error: "Failed to save contact form" });
       return;
     }
 
-    console.log("Contact form saved:", data);
-
     res.status(200).json({ success: true, message: "Form saved!", data });
   } catch (error) {
-    console.error("Contact form error:", error);
+
     res.status(500).json({ error: "Internal Server Error" });
   }
 };

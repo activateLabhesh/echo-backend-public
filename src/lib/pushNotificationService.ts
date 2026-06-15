@@ -24,6 +24,14 @@ type PushMessage = {
   sound?: string;
 };
 
+type AttachmentType = 'image' | 'audio' | 'file';
+
+type AttachmentPreviewRow = {
+  message_id?: string;
+  dm_message_id?: string;
+  attachment_type: AttachmentType;
+};
+
 const MAX_PREVIEW_MESSAGES = 3;
 const PREVIEW_LINE_MAX = 90;
 const PREVIEW_BODY_MAX = 360;
@@ -54,11 +62,10 @@ async function removeInvalidTokensFromDb(tokens: string[]): Promise<void> {
     .in('push_token', uniqueTokens);
 
   if (error) {
-    console.error('[PushNotification] Failed to remove invalid tokens:', error.message);
+
     return;
   }
 
-  console.log(`[PushNotification] Removed ${uniqueTokens.length} invalid push token(s) from DB`);
 }
 
 /**
@@ -71,7 +78,7 @@ async function getTokensForUser(userId: string): Promise<string[]> {
     .eq('user_id', userId);
 
   if (error) {
-    console.error('[PushNotification] Error fetching tokens for user:', userId, error.message);
+
     return [];
   }
 
@@ -126,6 +133,39 @@ function previewFromMessage(content: unknown, mediaUrl: unknown): string {
   return 'New message';
 }
 
+function previewFromMessageWithAttachments(
+  content: unknown,
+  mediaUrl: unknown,
+  attachments: AttachmentPreviewRow[] = []
+): string {
+  const text = typeof content === 'string' ? content.trim() : '';
+  if (text) return toSingleLine(text);
+
+  if (attachments.some((attachment) => attachment.attachment_type === 'audio')) {
+    return 'Sent a voice message';
+  }
+
+  return previewFromMessage(content, mediaUrl);
+}
+
+function buildAttachmentPreviewMap<T extends AttachmentPreviewRow>(
+  rows: T[],
+  key: 'message_id' | 'dm_message_id'
+): Map<string, T[]> {
+  const map = new Map<string, T[]>();
+
+  rows.forEach((row) => {
+    const id = row[key];
+    if (!id) return;
+
+    const existing = map.get(id) || [];
+    existing.push(row);
+    map.set(id, existing);
+  });
+
+  return map;
+}
+
 function buildPreviewBody(lines: string[]): string {
   const normalized = lines
     .map((line) => toSingleLine(line))
@@ -143,7 +183,7 @@ function buildPreviewBody(lines: string[]): string {
 async function getLatestDmPreviewLines(threadId: string, senderId: string): Promise<string[]> {
   const { data, error } = await supabase
     .from('dm_messages')
-    .select('content, media_url, timestamp')
+    .select('id, content, media_url, timestamp')
     .eq('thread_id', threadId)
     .eq('sender_id', senderId)
     .order('timestamp', { ascending: false })
@@ -151,16 +191,38 @@ async function getLatestDmPreviewLines(threadId: string, senderId: string): Prom
 
   if (error || !data || data.length === 0) return [];
 
+  const messageIds = data.map((msg: any) => msg.id).filter((id: unknown): id is string => typeof id === 'string');
+  let attachmentsByMessageId = new Map<string, AttachmentPreviewRow[]>();
+
+  if (messageIds.length > 0) {
+    const { data: attachmentRows, error: attachmentError } = await supabase
+      .from('dm_message_attachments')
+      .select('dm_message_id, attachment_type')
+      .in('dm_message_id', messageIds);
+
+    if (!attachmentError && attachmentRows) {
+      attachmentsByMessageId = buildAttachmentPreviewMap(
+        attachmentRows as AttachmentPreviewRow[],
+        'dm_message_id'
+      );
+    }
+  }
+
   return data
     .slice()
     .reverse()
-    .map((msg: any) => previewFromMessage(msg.content, msg.media_url));
+    .map((msg: any) => previewFromMessageWithAttachments(
+      msg.content,
+      msg.media_url,
+      attachmentsByMessageId.get(msg.id) || []
+    ));
 }
 
 async function getLatestChannelPreviewLines(channelId: string): Promise<string[]> {
   const { data, error } = await supabase
     .from('messages')
     .select(`
+      id,
       content,
       media_url,
       timestamp,
@@ -174,12 +236,33 @@ async function getLatestChannelPreviewLines(channelId: string): Promise<string[]
 
   if (error || !data || data.length === 0) return [];
 
+  const messageIds = data.map((msg: any) => msg.id).filter((id: unknown): id is string => typeof id === 'string');
+  let attachmentsByMessageId = new Map<string, AttachmentPreviewRow[]>();
+
+  if (messageIds.length > 0) {
+    const { data: attachmentRows, error: attachmentError } = await supabase
+      .from('message_attachments')
+      .select('message_id, attachment_type')
+      .in('message_id', messageIds);
+
+    if (!attachmentError && attachmentRows) {
+      attachmentsByMessageId = buildAttachmentPreviewMap(
+        attachmentRows as AttachmentPreviewRow[],
+        'message_id'
+      );
+    }
+  }
+
   return data
     .slice()
     .reverse()
     .map((msg: any) => {
       const senderName = msg?.sender?.username || 'Someone';
-      const preview = previewFromMessage(msg?.content, msg?.media_url);
+      const preview = previewFromMessageWithAttachments(
+        msg?.content,
+        msg?.media_url,
+        attachmentsByMessageId.get(msg?.id) || []
+      );
       return `${toSingleLine(senderName, 24)}: ${preview}`;
     });
 }
@@ -210,7 +293,7 @@ async function sendExpoPush(messages: PushMessage[]): Promise<void> {
 
       if (!response.ok) {
         const text = await response.text();
-        console.error('[PushNotification] Expo Push API error:', response.status, text);
+
         continue;
       }
 
@@ -223,7 +306,6 @@ async function sendExpoPush(messages: PushMessage[]): Promise<void> {
         if (ticket?.status !== 'error') continue;
 
         const ticketError = ticket?.message || ticket?.details?.error || 'unknown_error';
-        console.error('[PushNotification] Expo ticket error:', ticketError);
 
         // Expo recommends removing DeviceNotRegistered tokens.
         if (ticket?.details?.error === 'DeviceNotRegistered') {
@@ -235,9 +317,8 @@ async function sendExpoPush(messages: PushMessage[]): Promise<void> {
         await removeInvalidTokensFromDb(invalidTokens);
       }
 
-      console.log(`[PushNotification] Sent ${chunk.length} notification(s)`);
     } catch (err: any) {
-      console.error('[PushNotification] Failed to call Expo Push API:', err?.message || err);
+
     }
   }
 }
@@ -255,7 +336,7 @@ export async function sendDmPushNotification(
   try {
     const tokens = await getTokensForUser(receiverId);
     if (tokens.length === 0) {
-      console.log(`[PushNotification] No push tokens for DM receiver ${receiverId}`);
+
       return;
     }
 
@@ -290,7 +371,7 @@ export async function sendDmPushNotification(
 
     await sendExpoPush(messages);
   } catch (err: any) {
-    console.error('[PushNotification] sendDmPushNotification error:', err?.message || err);
+
   }
 }
 
@@ -311,7 +392,7 @@ export async function sendChannelPushNotification(
       .single();
 
     if (channelError || !channel) {
-      console.error('[PushNotification] Could not find channel:', channelId, channelError?.message);
+
       return;
     }
 
@@ -336,7 +417,7 @@ export async function sendChannelPushNotification(
       try {
         redisSocket = await getUserSocket(member.user_id);
       } catch (error: any) {
-        console.warn('[PushNotification] Redis socket lookup failed:', error?.message || error);
+
       }
 
       if (redisSocket) continue;
@@ -344,7 +425,7 @@ export async function sendChannelPushNotification(
     }
 
     if (offlineUserIds.length === 0) {
-      console.log('[PushNotification] All channel members are online, skipping push');
+
       return;
     }
 
@@ -355,12 +436,12 @@ export async function sendChannelPushNotification(
         const canView = await checkChannelAccess(userId, channelId);
         if (canView) allowedOfflineUserIds.push(userId);
       } catch (error: any) {
-        console.warn('[PushNotification] Channel access check failed:', error?.message || error);
+
       }
     }
 
     if (allowedOfflineUserIds.length === 0) {
-      console.log('[PushNotification] No offline users have access to this channel');
+
       return;
     }
 
@@ -371,7 +452,7 @@ export async function sendChannelPushNotification(
       .in('user_id', allowedOfflineUserIds);
 
     if (tokenError || !tokenRows || tokenRows.length === 0) {
-      console.log('[PushNotification] No push tokens for eligible channel members');
+
       return;
     }
 
@@ -408,6 +489,6 @@ export async function sendChannelPushNotification(
 
     await sendExpoPush(messages);
   } catch (err: any) {
-    console.error('[PushNotification] sendChannelPushNotification error:', err?.message || err);
+
   }
 }

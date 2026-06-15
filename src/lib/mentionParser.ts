@@ -111,7 +111,7 @@ export const resolveMentions = async (mentions: MentionMatch[], channelId: strin
           }
         }
       } catch (error) {
-        console.error('Error resolving user mention:', mention.value, error);
+
       }
     }
   }
@@ -149,7 +149,7 @@ export const processMentions = async (
       .single();
 
     if (!channel || !sender) {
-      console.error('Failed to get channel or sender info');
+
       return;
     }
 
@@ -169,7 +169,7 @@ export const processMentions = async (
           });
 
         if (mentionError) {
-          console.error('Error storing @everyone mention:', mentionError);
+
           continue;
         }
 
@@ -181,7 +181,7 @@ export const processMentions = async (
           .neq('user_id', senderId); // Don't notify the sender
 
         if (membersError || !serverMembers) {
-          console.error('Error fetching server members:', membersError);
+
           continue;
         }
 
@@ -214,7 +214,7 @@ export const processMentions = async (
           });
 
         if (mentionError) {
-          console.error('Error storing user mention:', mentionError);
+
           continue;
         }
 
@@ -235,7 +235,7 @@ export const processMentions = async (
       }
     }
   } catch (error) {
-    console.error('Error processing mentions:', error);
+
   }
 };
 
@@ -265,7 +265,7 @@ const createNotification = async (data: NotificationData): Promise<void> => {
       .single();
 
     if (checkError && checkError.code !== 'PGRST116') { // PGRST116 is "not found" error
-      console.error('Error checking existing notification:', checkError);
+
       return;
     }
 
@@ -286,7 +286,7 @@ const createNotification = async (data: NotificationData): Promise<void> => {
       .single();
 
     if (error) {
-      console.error('Error creating notification in database:', error);
+
       return;
     }
 
@@ -315,6 +315,6 @@ const createNotification = async (data: NotificationData): Promise<void> => {
 
     // console.log('Notification created successfully for user:', data.userId);
   } catch (error) {
-    console.error('Error creating notification:', error);
+
   }
 };

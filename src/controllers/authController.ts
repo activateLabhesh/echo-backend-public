@@ -80,7 +80,7 @@ export const register = async (req: Request, res: Response): Promise <void> => {
   ]);
 
   if (insertError) {
-    console.error('Insert error:', insertError.message);
+
     res.status(500).json({ message: `Insert Error. ${insertError.message}` });
     return
   }
@@ -332,7 +332,7 @@ export const changePassword = async (req: Request, res: Response): Promise<void>
     });
 
     if (error) {
-      console.error('Admin update error', error);
+
       res.status(400).json({ message: error.message || 'Failed to change password' });
       return;
     }
@@ -340,7 +340,7 @@ export const changePassword = async (req: Request, res: Response): Promise<void>
     res.status(200).json({ message: 'Password changed successfully' });
     return;
   } catch (err: any) {
-    console.error('changePassword error', err);
+
     res.status(500).json({ message: 'Server error' });
   }
 };
@@ -358,7 +358,7 @@ export const authorize = async (req: Request, res: Response): Promise<void> => {
     const { data: userData, error } = await supabase.auth.getUser(accessToken);
 
     if (error || !userData.user) {
-      console.warn('Authorization failed:', error?.message || 'No user data found.');
+
       res.status(401).json({ message: 'Unauthorized: Invalid or expired access token.' });
       return;
     }
@@ -372,7 +372,7 @@ export const authorize = async (req: Request, res: Response): Promise<void> => {
     });
 
   } catch (err: any) {
-    console.error('Error in authorize route:', err.message || err);
+
     // Catch any unexpected errors during token processing
     res.status(500).json({ message: 'Internal server error during authorization.' });
   }
@@ -396,7 +396,7 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
     const { data: userData, error: userError } = await supabase.auth.getUser(access_token);
 
     if (userError || !userData?.user) {
-      console.error('OAuth user validation error:', userError);
+
       res.status(401).json({ message: 'Invalid access token' });
       return;
     }
@@ -411,7 +411,7 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
       .maybeSingle();
 
     if (fetchError) {
-      console.error('Error fetching user by ID:', fetchError);
+
     }
 
     // If not found by ID, check by email (user might have registered with email/password before)
@@ -423,7 +423,7 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
         .maybeSingle();
 
       if (emailError) {
-        console.error('Error fetching user by email:', emailError);
+
       }
 
       if (emailUser) {
@@ -435,7 +435,7 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
           .eq('email', supabaseUser.email);
 
         if (updateError) {
-          console.error('Error linking OAuth account:', updateError);
+
           // If we can't update the ID, just use the existing user data
           existingUser = emailUser;
         } else {
@@ -491,7 +491,7 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
         .insert([newUser]);
 
       if (insertError) {
-        console.error('Error creating OAuth user:', insertError);
+
         res.status(500).json({ message: 'Failed to create user record' });
         return;
       }
@@ -547,11 +547,10 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
     }
 
   } catch (err: any) {
-    console.error('OAuth handler error:', err);
+
     res.status(500).json({ message: 'Server error during OAuth login' });
   }
 };
-
 
 
 export const handleGoogleOAuth = async (req: Request, res: Response): Promise<void> => {
@@ -581,8 +580,6 @@ export const handleGoogleOAuth = async (req: Request, res: Response): Promise<vo
       return;
     }
 
-    console.log(`Google OAuth: Processing ${email}`);
-
     // 2. Find or create user in Supabase Auth
     let supabaseUser: any;
     let isNewSupabaseUser = false;
@@ -603,7 +600,7 @@ export const handleGoogleOAuth = async (req: Request, res: Response): Promise<vo
       });
 
       if (createError || !newAuthUser?.user) {
-        console.error('Error creating Supabase Auth user:', createError);
+
         res.status(500).json({ message: 'Failed to create authentication user', details: createError?.message });
         return;
       }
@@ -633,7 +630,7 @@ export const handleGoogleOAuth = async (req: Request, res: Response): Promise<vo
     });
 
     if (linkError || !linkData) {
-      console.error('Error generating magic link:', linkError);
+
       res.status(500).json({ message: 'Failed to generate session', details: linkError?.message });
       return;
     }
@@ -669,7 +666,7 @@ export const handleGoogleOAuth = async (req: Request, res: Response): Promise<vo
     }
 
     if (sessionError || !sessionData?.session) {
-      console.error('Error creating session via verifyOtp:', sessionError);
+
       res.status(500).json({ message: 'Failed to create session', details: sessionError?.message });
       return;
     }
@@ -702,7 +699,7 @@ export const handleGoogleOAuth = async (req: Request, res: Response): Promise<vo
           .eq('email', supabaseUser.email);
 
         if (updateError) {
-          console.error('Error linking OAuth account:', updateError);
+
           existingUser = emailUser;
         } else {
           const { data: updatedUser } = await supabaseAdmin
@@ -746,7 +743,7 @@ export const handleGoogleOAuth = async (req: Request, res: Response): Promise<vo
 
       const { error: insertError } = await supabaseAdmin.from('users').insert([newUser]);
       if (insertError) {
-        console.error('Error creating Google OAuth user:', insertError);
+
         res.status(500).json({ message: 'Failed to create user record', details: insertError.message });
         return;
       }
@@ -786,7 +783,7 @@ export const handleGoogleOAuth = async (req: Request, res: Response): Promise<vo
 
     res.status(200).json(responseBody);
   } catch (err: any) {
-    console.error('Google OAuth handler error:', err);
+
     res.status(500).json({ message: 'Server error during Google OAuth' });
   }
 };

@@ -1125,7 +1125,59 @@ Content-Type: application/json
 
 ---
 
-### 4.2 Get Server Channels
+### 4.2 Edit Channel
+**PUT** `/api/channel/:server_id/channels/:channel_id`
+
+**Headers**:
+```
+Authorization: Bearer <access_token>
+Content-Type: application/json
+```
+
+**URL Parameters**:
+- `server_id` (string, required)
+- `channel_id` (string, required)
+
+**Body**:
+```json
+{
+  "name": "announcements",
+  "category_id": "category-uuid-here",
+  "position": 2,
+  "channel_type": "read_only",
+  "allowed_role_ids": [],
+  "moderator_role_ids": ["role-uuid-here"]
+}
+```
+
+All fields are optional, but at least one must be provided.
+
+**Success Response** (200):
+```json
+{
+  "id": "uuid-here",
+  "server_id": "server-uuid-here",
+  "name": "announcements",
+  "type": "text",
+  "is_private": false,
+  "category_id": "category-uuid-here",
+  "position": 2,
+  "channel_type": "read_only",
+  "allowed_role_ids": [],
+  "moderator_role_ids": ["role-uuid-here"]
+}
+```
+
+**Error Response** (400):
+```json
+{
+  "error": "Invalid channel type. Must be: normal, read_only, or role_restricted"
+}
+```
+
+---
+
+### 4.3 Get Server Channels
 **GET** `/api/channel/:server_id/getChannels`
 
 **Headers**:
@@ -1160,7 +1212,7 @@ Authorization: Bearer <access_token>
 
 ---
 
-### 4.3 Join Channel
+### 4.4 Join Channel
 **POST** `/api/channel/:serverId/joinChannel`
 
 **Headers**:
@@ -1188,7 +1240,7 @@ Content-Type: application/json
 
 ---
 
-### 4.4 Get Channels with Access
+### 4.5 Get Channels with Access
 **GET** `/api/channel/:server_id/channels-with-access`
 
 **Headers**:
@@ -1221,7 +1273,7 @@ Authorization: Bearer <access_token>
 
 ---
 
-### 4.5 Set Channel Role Access
+### 4.6 Set Channel Role Access
 **POST** `/api/channel/:channel_id/role-access`
 
 **Headers**:
@@ -1251,7 +1303,7 @@ Content-Type: application/json
 
 ---
 
-### 4.6 Get Channel Role Access
+### 4.7 Get Channel Role Access
 **GET** `/api/channel/:channel_id/role-access`
 
 **Headers**:
@@ -1273,6 +1325,48 @@ Authorization: Bearer <access_token>
       "can_send": true
     }
   ]
+}
+```
+
+---
+
+### 4.8 Delete Channel
+**DELETE** `/api/channel/:server_id/channels/:channel_id`
+
+**Headers**:
+```
+Authorization: Bearer <access_token>
+```
+
+**URL Parameters**:
+- `server_id` (string, required)
+- `channel_id` (string, required)
+
+**Success Response** (200):
+```json
+{
+  "message": "Channel deleted successfully"
+}
+```
+
+**Error Response** (401):
+```json
+{
+  "error": "Unauthorized"
+}
+```
+
+**Error Response** (403):
+```json
+{
+  "error": "Only owners and admins can delete channels"
+}
+```
+
+**Error Response** (404):
+```json
+{
+  "error": "Channel not found"
 }
 ```
 
@@ -1512,6 +1606,362 @@ Content-Type: application/json
 ```json
 {
   "success": true
+}
+```
+
+---
+
+### 5.8 Get Message Reactions
+**GET** `/api/message/reactions`
+
+**Headers**:
+```
+Authorization: Bearer <access_token>
+```
+
+**Query Parameters**:
+- `message_id` (string, optional)
+- `dm_message_id` (string, optional)
+
+**Success Response** (200):
+```json
+{
+  "reactions": [
+    {
+      "emoji": "👍",
+      "count": 3
+    }
+  ]
+}
+```
+
+---
+
+### 5.9 React to Message
+**POST** `/api/message/reactions`
+
+**Headers**:
+```
+Authorization: Bearer <access_token>
+Content-Type: application/json
+```
+
+**Body**:
+```json
+{
+  "message_id": "uuid-here",
+  "emoji": "👍"
+}
+```
+
+**DM Body**:
+```json
+{
+  "dm_message_id": "uuid-here",
+  "emoji": "❤️"
+}
+```
+
+**Success Response** (200):
+```json
+{
+  "message": "Reaction added successfully."
+}
+```
+
+---
+
+### 5.10 Remove Reaction
+**DELETE** `/api/message/reactions`
+
+**Headers**:
+```
+Authorization: Bearer <access_token>
+Content-Type: application/json
+```
+
+**Body**:
+```json
+{
+  "message_id": "uuid-here",
+  "emoji": "👍"
+}
+```
+
+**DM Body**:
+```json
+{
+  "dm_message_id": "uuid-here",
+  "emoji": "❤️"
+}
+```
+
+**Success Response** (200):
+```json
+{
+  "message": "Reaction removed successfully."
+}
+```
+
+---
+
+### 5.11 Search Channel Messages
+**GET** `/api/message/search/server/:serverId?q=hello`
+
+**Headers**:
+```
+Authorization: Bearer <access_token>
+```
+
+**URL Parameters**:
+- `serverId` (string, required)
+
+**Query Parameters**:
+- `q` (string, required): Search text
+
+**Success Response** (200):
+```json
+{
+  "data": [
+    {
+      "id": "uuid-here",
+      "content": "hello world",
+      "channel_id": "uuid-here",
+      "username": "john_doe",
+      "attachments": [],
+      "reactions": []
+    }
+  ]
+}
+```
+
+---
+
+### 5.12 Search DM Messages
+**GET** `/api/message/search/dm/:threadId?q=hello`
+
+**Headers**:
+```
+Authorization: Bearer <access_token>
+```
+
+**URL Parameters**:
+- `threadId` (string, required)
+
+**Query Parameters**:
+- `q` (string, required): Search text
+
+**Success Response** (200):
+```json
+{
+  "data": [
+    {
+      "id": "uuid-here",
+      "content": "hello there",
+      "thread_id": "uuid-here",
+      "username": "john_doe",
+      "attachments": [],
+      "reactions": []
+    }
+  ]
+}
+```
+
+---
+
+### 5.13 Get Channel Media
+**GET** `/api/message/media/server/:serverId`
+
+**Headers**:
+```
+Authorization: Bearer <access_token>
+```
+
+**URL Parameters**:
+- `serverId` (string, required)
+
+**Success Response** (200):
+```json
+{
+  "data": [
+    {
+      "attachment_id": "uuid-here",
+      "message_id": "uuid-here",
+      "url": "https://cdn.example.com/image.png",
+      "file_name": "image.png",
+      "attachment_type": "image",
+      "timestamp": "2024-01-01T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+---
+
+### 5.14 Get DM Media
+**GET** `/api/message/media/dm/:threadId`
+
+**Headers**:
+```
+Authorization: Bearer <access_token>
+```
+
+**URL Parameters**:
+- `threadId` (string, required)
+
+**Success Response** (200):
+```json
+{
+  "data": [
+    {
+      "attachment_id": "uuid-here",
+      "message_id": "uuid-here",
+      "url": "https://cdn.example.com/file.pdf",
+      "file_name": "file.pdf",
+      "attachment_type": "file",
+      "timestamp": "2024-01-01T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+---
+
+### 5.15 Get Pinned Messages
+**GET** `/api/message/pins`
+
+**Headers**:
+```
+Authorization: Bearer <access_token>
+```
+
+**Query Parameters**:
+- `channel_id` (string, optional)
+- `thread_id` (string, optional)
+
+**Success Response** (200):
+```json
+{
+  "data": [
+    {
+      "id": "uuid-here",
+      "content": "Important message",
+      "pinned_at": "2024-01-01T00:00:00.000Z",
+      "pinned_by": "uuid-here"
+    }
+  ]
+}
+```
+
+---
+
+### 5.16 Pin Channel Message
+**POST** `/api/message/pins`
+
+**Headers**:
+```
+Authorization: Bearer <access_token>
+Content-Type: application/json
+```
+
+**Body**:
+```json
+{
+  "message_id": "uuid-here"
+}
+```
+
+**Success Response** (200):
+```json
+{
+  "message": "Message pinned successfully.",
+  "data": {
+    "message_id": "uuid-here"
+  }
+}
+```
+
+---
+
+### 5.17 Pin DM Message
+**POST** `/api/message/pins`
+
+**Headers**:
+```
+Authorization: Bearer <access_token>
+Content-Type: application/json
+```
+
+**Body**:
+```json
+{
+  "dm_message_id": "uuid-here"
+}
+```
+
+**Success Response** (200):
+```json
+{
+  "message": "Message pinned successfully.",
+  "data": {
+    "dm_message_id": "uuid-here"
+  }
+}
+```
+
+---
+
+### 5.18 Unpin Channel Message
+**DELETE** `/api/message/pins`
+
+**Headers**:
+```
+Authorization: Bearer <access_token>
+Content-Type: application/json
+```
+
+**Body**:
+```json
+{
+  "message_id": "uuid-here"
+}
+```
+
+**Success Response** (200):
+```json
+{
+  "message": "Message unpinned successfully.",
+  "data": {
+    "message_id": "uuid-here"
+  }
+}
+```
+
+---
+
+### 5.19 Unpin DM Message
+**DELETE** `/api/message/pins`
+
+**Headers**:
+```
+Authorization: Bearer <access_token>
+Content-Type: application/json
+```
+
+**Body**:
+```json
+{
+  "dm_message_id": "uuid-here"
+}
+```
+
+**Success Response** (200):
+```json
+{
+  "message": "Message unpinned successfully.",
+  "data": {
+    "dm_message_id": "uuid-here"
+  }
 }
 ```
 
@@ -2107,6 +2557,58 @@ Authorization: Bearer <access_token>
   ]
 }
 ```
+
+---
+
+### 7.6 Unfriend Person
+**DELETE** `/api/friends/:friendId`
+
+**Headers**:
+```
+Authorization: Bearer <access_token>
+```
+
+**URL Parameters**:
+- `friendId` (string, required)
+
+**Success Response** (200):
+```json
+{
+  "message": "Friend removed successfully."
+}
+```
+
+**Error Response** (400):
+```json
+{
+  "message": "Friend ID is required."
+}
+```
+
+**Error Response** (400):
+```json
+{
+  "message": "You cannot unfriend yourself."
+}
+```
+
+**Error Response** (401):
+```json
+{
+  "message": "Unauthorized. Please log in."
+}
+```
+
+**Error Response** (404):
+```json
+{
+  "message": "Friendship not found."
+}
+```
+
+**Notes**:
+- This removes only the friendship row.
+- Existing `dm_threads` and DM history are not deleted.
 
 ---
 

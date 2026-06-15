@@ -27,7 +27,7 @@ export const spamProtection = async (req: Request, res: Response, next: NextFunc
       return;
     }
   } catch (error) {
-    console.error('[spamProtection] Redis unavailable, allowing request:', error);
+
   }
 
   next();

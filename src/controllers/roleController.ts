@@ -921,7 +921,7 @@ export const getRoleDetailsWithPermissions = async (req: AuthenticatedRequest, r
 
     } catch (error) {
         const err = error as Error;
-        console.error('FINAL CATCH BLOCK - Error in getRoleDetailsWithPermissions:', err.message);
+
         res.status(500).json({ error: 'Internal server error' });
     }
 };
@@ -1040,7 +1040,7 @@ export const addRole = async (req: AuthenticatedRequest, res: Response): Promise
 
     } catch (error) {
         const err = error as Error;
-        console.error('Error in addRole controller:', err.message);
+
         res.status(500).json({ error: 'An unexpected internal server error occurred.', details: err.message });
     }
 };
@@ -1141,7 +1141,7 @@ export const editRole = async(req:AuthenticatedRequest, res:Response): Promise<v
 
     } catch (error) {
         const err = error as Error;
-        console.error('Error in editRole controller:', err.message);
+
         res.status(500).json({ error: 'Internal server error.', details: err.message });
     }
 };
@@ -1189,7 +1189,7 @@ export const assignRole = async (req: AuthenticatedRequest, res: Response): Prom
 
         if (rpcError) {
             // The RPC function provides detailed, safe error messages.
-            console.error('RPC `assign_role_to_user` error:', rpcError);
+
             res.status(403).json({ message: 'Failed to assign role.', details: rpcError.message });
             return 
         }
@@ -1202,7 +1202,7 @@ export const assignRole = async (req: AuthenticatedRequest, res: Response): Prom
 
     } catch (error) {
         const err = error as Error;
-        console.error('Error in assignRole controller:', err.message);
+
         res.status(500).json({ error: 'An unexpected internal server error occurred.' });
     }
 };
@@ -1269,7 +1269,7 @@ export const deleteRole = async (req: AuthenticatedRequest, res: Response): Prom
     res.status(200).json({ message: 'Role deleted successfully' });
 
   } catch (error) {
-    console.error('Error deleting role:', error);
+
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -1323,7 +1323,7 @@ export const removeRoleFromUser = async (req: AuthenticatedRequest, res: Respons
     res.status(200).json({ message: 'Role removed from user successfully' });
 
   } catch (error) {
-    console.error('Error removing role from user:', error);
+
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -1352,7 +1352,7 @@ export const getAvailablePermissions = async (req: Request, res: Response): Prom
     res.status(200).json(permissions);
 
   } catch (error) {
-    console.error('Error getting available permissions:', error);
+
     res.status(500).json({ error: 'Internal server error' });
   }
 };
