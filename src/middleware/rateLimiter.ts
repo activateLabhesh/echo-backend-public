@@ -38,7 +38,7 @@ export const rateLimiter = async (req: Request, res: Response, next: NextFunctio
       return;
     }
   } catch (error) {
-
+    console.error('[rateLimiter] Redis unavailable, allowing request:', error);
   }
 
   next();

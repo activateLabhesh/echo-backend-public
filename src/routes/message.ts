@@ -18,7 +18,7 @@ router.post('/upload', authenticate, upload.fields([{name: 'image', maxCount: 6}
 router.post('/upload_dm', authenticate, upload.fields([{ name: 'image', maxCount: 6 }, { name: 'file', maxCount: 6 }]), dmMessagePostController);
 router.get('/fetch', authenticate, messageGetController);
 router.get('/reactions', authenticate, getMessageReactions);
-router.post('/reactions/toggle', authenticate,toggleMessageReaction);
+router.post('/reactions/toggle', authenticate, toggleMessageReaction);
 router.get('/search/server/:serverId', authenticate, searchChannelMessages);
 router.get('/search/dm/:threadId', authenticate, searchDmMessages);
 router.get('/media/server/:serverId', authenticate, getChannelMedia);

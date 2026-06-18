@@ -22,6 +22,9 @@ type PushMessage = {
   body: string;
   data?: Record<string, any>;
   sound?: string;
+  channelId?: string;
+  collapseId?: string;
+  tag?: string;
 };
 
 type AttachmentType = 'image' | 'audio' | 'file';
@@ -35,6 +38,7 @@ type AttachmentPreviewRow = {
 const MAX_PREVIEW_MESSAGES = 3;
 const PREVIEW_LINE_MAX = 90;
 const PREVIEW_BODY_MAX = 360;
+const DEFAULT_ANDROID_CHANNEL_ID = 'default';
 
 function isExpoPushToken(token: string): boolean {
   return EXPO_TOKEN_RE.test(token);
@@ -180,6 +184,41 @@ function buildPreviewBody(lines: string[]): string {
   return `${body}...`;
 }
 
+function buildDmNotificationKey(threadId: string | undefined, senderId: string): string {
+  return `dm:${threadId || senderId}`;
+}
+
+function buildChannelNotificationKey(channelId: string): string {
+  return `channel:${channelId}`;
+}
+
+function withConversationCollapse<T extends Omit<PushMessage, 'to'> & { data?: Record<string, any> }>(
+  message: T,
+  groupKey: string,
+): T & Pick<PushMessage, 'channelId' | 'collapseId' | 'tag'> {
+  return {
+    ...message,
+    channelId: DEFAULT_ANDROID_CHANNEL_ID,
+    collapseId: groupKey,
+    tag: groupKey,
+    data: {
+      ...message.data,
+      groupKey,
+    },
+  };
+}
+
+async function isUserOnline(userId: string): Promise<boolean> {
+  if (userSocketMap.has(userId)) return true;
+
+  try {
+    const socketId = await getUserSocket(userId);
+    return Boolean(socketId);
+  } catch {
+    return false;
+  }
+}
+
 async function getLatestDmPreviewLines(threadId: string, senderId: string): Promise<string[]> {
   const { data, error } = await supabase
     .from('dm_messages')
@@ -218,8 +257,11 @@ async function getLatestDmPreviewLines(threadId: string, senderId: string): Prom
     ));
 }
 
-async function getLatestChannelPreviewLines(channelId: string): Promise<string[]> {
-  const { data, error } = await supabase
+async function getLatestChannelPreviewLines(
+  channelId: string,
+  excludedUserId?: string,
+): Promise<string[]> {
+  let query = supabase
     .from('messages')
     .select(`
       id,
@@ -233,6 +275,12 @@ async function getLatestChannelPreviewLines(channelId: string): Promise<string[]
     .eq('channel_id', channelId)
     .order('timestamp', { ascending: false })
     .limit(MAX_PREVIEW_MESSAGES);
+
+  if (excludedUserId) {
+    query = query.neq('sender_id', excludedUserId);
+  }
+
+  const { data, error } = await query;
 
   if (error || !data || data.length === 0) return [];
 
@@ -334,6 +382,8 @@ export async function sendDmPushNotification(
   threadId?: string
 ): Promise<void> {
   try {
+    if (senderId === receiverId) return;
+
     const tokens = await getTokensForUser(receiverId);
     if (tokens.length === 0) {
 
@@ -352,21 +402,27 @@ export async function sendDmPushNotification(
 
     const body = buildPreviewBody(previewLines);
     const messageCount = previewLines.length;
+    const groupKey = buildDmNotificationKey(threadId, senderId);
+    const baseMessage = withConversationCollapse(
+      {
+        title: senderName,
+        ...(messageCount > 1 ? { subtitle: `${messageCount} new messages` } : {}),
+        body,
+        sound: 'default',
+        data: {
+          type: 'dm',
+          senderId,
+          receiverId,
+          threadId: threadId || null,
+          previewLines: previewLines.slice(-MAX_PREVIEW_MESSAGES),
+        },
+      },
+      groupKey,
+    );
 
     const messages: PushMessage[] = tokens.map((token) => ({
       to: token,
-      title: senderName,
-      ...(messageCount > 1 ? { subtitle: `${messageCount} new messages` } : {}),
-      body,
-      sound: 'default',
-      data: {
-        type: 'dm',
-        senderId,
-        receiverId,
-        threadId: threadId || null,
-        groupKey: `dm:${senderId}`,
-        previewLines: previewLines.slice(-MAX_PREVIEW_MESSAGES),
-      },
+      ...baseMessage,
     }));
 
     await sendExpoPush(messages);
@@ -448,7 +504,7 @@ export async function sendChannelPushNotification(
     // 5) Fetch push tokens for eligible users.
     const { data: tokenRows, error: tokenError } = await supabase
       .from('user_push_tokens')
-      .select('push_token')
+      .select('user_id, push_token')
       .in('user_id', allowedOfflineUserIds);
 
     if (tokenError || !tokenRows || tokenRows.length === 0) {
@@ -456,39 +512,133 @@ export async function sendChannelPushNotification(
       return;
     }
 
-    const tokens = uniqueValidTokens(tokenRows.map((row: any) => row.push_token));
-    if (tokens.length === 0) return;
-
     // 6) Build and send push messages.
     const channelName = channel.name || 'channel';
-    let previewLines = await getLatestChannelPreviewLines(channelId);
+    const groupKey = buildChannelNotificationKey(channelId);
+    const sentTokens = new Set<string>();
+    const messages: PushMessage[] = [];
 
-    if (previewLines.length === 0) {
-      const senderName = await getUsername(senderId);
-      const fallbackPreview = previewFromMessage(messagePreview, null);
-      previewLines = [`${toSingleLine(senderName, 24)}: ${fallbackPreview}`];
+    for (const recipientId of allowedOfflineUserIds) {
+      const tokens = uniqueValidTokens(
+        tokenRows
+          .filter((row: any) => row.user_id === recipientId)
+          .map((row: any) => row.push_token),
+      ).filter((token) => !sentTokens.has(token));
+
+      if (tokens.length === 0) continue;
+
+      let previewLines = await getLatestChannelPreviewLines(channelId, recipientId);
+
+      if (previewLines.length === 0) {
+        const senderName = await getUsername(senderId);
+        const fallbackPreview = previewFromMessage(messagePreview, null);
+        previewLines = [`${toSingleLine(senderName, 24)}: ${fallbackPreview}`];
+      }
+
+      const body = buildPreviewBody(previewLines);
+      const messageCount = previewLines.length;
+      const baseMessage = withConversationCollapse(
+        {
+          title: `#${channelName}`,
+          ...(messageCount > 1 ? { subtitle: `${messageCount} new messages` } : {}),
+          body,
+          sound: 'default',
+          data: {
+            type: 'channel_message',
+            channelId,
+            serverId: channel.server_id,
+            previewLines: previewLines.slice(-MAX_PREVIEW_MESSAGES),
+          },
+        },
+        groupKey,
+      );
+
+      for (const token of tokens) {
+        sentTokens.add(token);
+        messages.push({
+          to: token,
+          ...baseMessage,
+        });
+      }
     }
-
-    const body = buildPreviewBody(previewLines);
-    const messageCount = previewLines.length;
-
-    const messages: PushMessage[] = tokens.map((token) => ({
-      to: token,
-      title: `#${channelName}`,
-      ...(messageCount > 1 ? { subtitle: `${messageCount} new messages` } : {}),
-      body,
-      sound: 'default',
-      data: {
-        type: 'channel_message',
-        channelId,
-        serverId: channel.server_id,
-        groupKey: `channel:${channelId}`,
-        previewLines: previewLines.slice(-MAX_PREVIEW_MESSAGES),
-      },
-    }));
 
     await sendExpoPush(messages);
   } catch (err: any) {
 
+  }
+}
+
+export async function sendReactionPushNotification(
+  reactorId: string,
+  recipientId: string,
+  emoji: string,
+  payload:
+    | {
+        kind: 'channel';
+        channelId: string;
+        serverId: string;
+        channelName: string;
+        messageId: string;
+      }
+    | {
+        kind: 'dm';
+        threadId: string;
+        dmMessageId: string;
+      },
+): Promise<void> {
+  if (reactorId === recipientId) return;
+
+  try {
+    const online = await isUserOnline(recipientId);
+    if (online) return;
+
+    const tokens = await getTokensForUser(recipientId);
+    if (tokens.length === 0) return;
+
+    const reactorName = await getUsername(reactorId);
+    const isDm = payload.kind === 'dm';
+    const groupKey = isDm
+      ? buildDmNotificationKey(payload.threadId, reactorId)
+      : buildChannelNotificationKey(payload.channelId);
+    const title = isDm ? reactorName : `#${payload.channelName}`;
+    const reactionLine = `${reactorName} reacted ${emoji} to your message`;
+    const previewLines = isDm
+      ? await getLatestDmPreviewLines(payload.threadId, reactorId)
+      : await getLatestChannelPreviewLines(payload.channelId, recipientId);
+    const body = buildPreviewBody([...previewLines, reactionLine]);
+    const baseMessage = withConversationCollapse(
+      {
+        title,
+        body,
+        sound: 'default',
+        data: isDm
+          ? {
+              type: 'dm_reaction',
+              threadId: payload.threadId,
+              dmMessageId: payload.dmMessageId,
+              senderId: reactorId,
+              reactorId,
+              emoji,
+            }
+          : {
+              type: 'channel_reaction',
+              serverId: payload.serverId,
+              channelId: payload.channelId,
+              messageId: payload.messageId,
+              reactorId,
+              emoji,
+            },
+      },
+      groupKey,
+    );
+
+    const messages: PushMessage[] = tokens.map((token) => ({
+      to: token,
+      ...baseMessage,
+    }));
+
+    await sendExpoPush(messages);
+  } catch (err: any) {
+    console.error('[PushNotification] sendReactionPushNotification error:', err?.message || err);
   }
 }
