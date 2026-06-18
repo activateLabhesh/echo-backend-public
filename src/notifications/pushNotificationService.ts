@@ -5,10 +5,7 @@
  * Calls are fire-and-forget and should never block message delivery.
  */
 
-import { supabase } from '../client/supabase';
-import { checkChannelAccess } from '../controllers/channelController';
-import { getUserSocket } from '../redis/userSocketStore';
-import { userSocketMap } from '../sockets/chatSocket';
+import { supabaseAdmin as supabase } from '../client/supabase';
 
 const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
 const EXPO_BATCH_SIZE = 100;
@@ -22,6 +19,9 @@ type PushMessage = {
   body: string;
   data?: Record<string, any>;
   sound?: string;
+  priority?: 'default' | 'normal' | 'high';
+  collapseId?: string;
+  tag?: string;
 };
 
 type AttachmentType = 'image' | 'audio' | 'file';
@@ -52,6 +52,10 @@ function uniqueValidTokens(tokens: Array<string | null | undefined>): string[] {
   return Array.from(unique);
 }
 
+function redactPushTokens(value: string): string {
+  return value.replace(/(?:ExponentPushToken|ExpoPushToken)\[[^\]]+\]/g, 'ExpoPushToken[redacted]');
+}
+
 async function removeInvalidTokensFromDb(tokens: string[]): Promise<void> {
   if (tokens.length === 0) return;
 
@@ -62,10 +66,9 @@ async function removeInvalidTokensFromDb(tokens: string[]): Promise<void> {
     .in('push_token', uniqueTokens);
 
   if (error) {
-
+    console.error('[PushNotification] Failed to remove invalid push tokens:', error.message);
     return;
   }
-
 }
 
 /**
@@ -78,7 +81,7 @@ async function getTokensForUser(userId: string): Promise<string[]> {
     .eq('user_id', userId);
 
   if (error) {
-
+    console.error('[PushNotification] Failed to fetch push tokens:', error.message);
     return [];
   }
 
@@ -180,6 +183,104 @@ function buildPreviewBody(lines: string[]): string {
   return `${body}...`;
 }
 
+function buildDmNotificationKey(threadId: string | undefined, senderId: string): string {
+  return `dm:${threadId || senderId}`;
+}
+
+function buildChannelNotificationKey(channelId: string): string {
+  return `channel:${channelId}`;
+}
+
+function withConversationCollapse<T extends Omit<PushMessage, 'to'> & { data?: Record<string, any> }>(
+  message: T,
+  groupKey: string,
+): T & Pick<PushMessage, 'collapseId' | 'tag'> {
+  return {
+    ...message,
+    collapseId: groupKey,
+    tag: groupKey,
+    data: {
+      ...message.data,
+      groupKey,
+    },
+  };
+}
+
+function roleRowsByUser(rows: any[]): Map<string, any[]> {
+  const rolesByUser = new Map<string, any[]>();
+
+  rows.forEach((row) => {
+    if (!row?.user_id) return;
+    const existing = rolesByUser.get(row.user_id) || [];
+    const role = Array.isArray(row.roles) ? row.roles[0] : row.roles;
+    existing.push({ ...row, roles: role });
+    rolesByUser.set(row.user_id, existing);
+  });
+
+  return rolesByUser;
+}
+
+async function filterUsersWithChannelAccess(
+  userIds: string[],
+  channel: { server_id: string; channel_type?: string | null; allowed_role_ids?: string[] | null }
+): Promise<string[]> {
+  if (userIds.length === 0) return [];
+
+  const channelType = channel.channel_type || 'normal';
+  if (channelType === 'normal' || channelType === 'read_only') {
+    return userIds;
+  }
+
+  if (channelType !== 'role_restricted') {
+    return [];
+  }
+
+  const allowedRoleIds = new Set(channel.allowed_role_ids || []);
+  const { data: server, error: serverError } = await supabase
+    .from('servers')
+    .select('owner_id')
+    .eq('id', channel.server_id)
+    .maybeSingle();
+
+  if (serverError) {
+    console.error('[PushNotification] Failed to fetch server owner:', serverError.message);
+  }
+
+  const { data: userRoles, error } = await supabase
+    .from('user_roles')
+    .select(`
+      user_id,
+      role_id,
+      roles!inner(id, name, role_type, server_id)
+    `)
+    .in('user_id', userIds)
+    .eq('roles.server_id', channel.server_id);
+
+  if (error) {
+    console.error('[PushNotification] Failed to check channel roles:', error.message);
+    return [];
+  }
+
+  const rolesByUser = roleRowsByUser(userRoles || []);
+
+  return userIds.filter((userId) => {
+    if (server?.owner_id === userId) return true;
+
+    const roles = rolesByUser.get(userId) || [];
+    return roles.some((row) => {
+      const roleName = (row.roles?.name || '').toString().toLowerCase();
+      const roleType = (row.roles?.role_type || '').toString().toLowerCase();
+      return (
+        allowedRoleIds.has(row.role_id) ||
+        roleName === 'admin' ||
+        roleType === 'admin' ||
+        roleName === 'owner' ||
+        roleType === 'owner'
+      );
+    });
+  });
+}
+
 async function getLatestDmPreviewLines(threadId: string, senderId: string): Promise<string[]> {
   const { data, error } = await supabase
     .from('dm_messages')
@@ -218,8 +319,11 @@ async function getLatestDmPreviewLines(threadId: string, senderId: string): Prom
     ));
 }
 
-async function getLatestChannelPreviewLines(channelId: string): Promise<string[]> {
-  const { data, error } = await supabase
+async function getLatestChannelPreviewLines(
+  channelId: string,
+  excludedUserId?: string,
+): Promise<string[]> {
+  let query = supabase
     .from('messages')
     .select(`
       id,
@@ -233,6 +337,12 @@ async function getLatestChannelPreviewLines(channelId: string): Promise<string[]
     .eq('channel_id', channelId)
     .order('timestamp', { ascending: false })
     .limit(MAX_PREVIEW_MESSAGES);
+
+  if (excludedUserId) {
+    query = query.neq('sender_id', excludedUserId);
+  }
+
+  const { data, error } = await query;
 
   if (error || !data || data.length === 0) return [];
 
@@ -281,19 +391,25 @@ async function sendExpoPush(messages: PushMessage[]): Promise<void> {
 
   for (const chunk of chunks) {
     try {
+      const headers: Record<string, string> = {
+        Accept: 'application/json',
+        'Accept-Encoding': 'gzip, deflate',
+        'Content-Type': 'application/json',
+      };
+      const expoAccessToken = process.env.EXPO_ACCESS_TOKEN?.trim();
+      if (expoAccessToken) {
+        headers.Authorization = `Bearer ${expoAccessToken}`;
+      }
+
       const response = await fetch(EXPO_PUSH_URL, {
         method: 'POST',
-        headers: {
-          Accept: 'application/json',
-          'Accept-Encoding': 'gzip, deflate',
-          'Content-Type': 'application/json',
-        },
+        headers,
         body: JSON.stringify(chunk),
       });
 
       if (!response.ok) {
-        const text = await response.text();
-
+        const text = redactPushTokens(await response.text());
+        console.error('[PushNotification] Expo Push API error:', response.status, text);
         continue;
       }
 
@@ -306,6 +422,7 @@ async function sendExpoPush(messages: PushMessage[]): Promise<void> {
         if (ticket?.status !== 'error') continue;
 
         const ticketError = ticket?.message || ticket?.details?.error || 'unknown_error';
+        console.error('[PushNotification] Expo ticket error:', redactPushTokens(String(ticketError)));
 
         // Expo recommends removing DeviceNotRegistered tokens.
         if (ticket?.details?.error === 'DeviceNotRegistered') {
@@ -318,7 +435,7 @@ async function sendExpoPush(messages: PushMessage[]): Promise<void> {
       }
 
     } catch (err: any) {
-
+      console.error('[PushNotification] Failed to call Expo Push API:', err?.message || err);
     }
   }
 }
@@ -334,6 +451,8 @@ export async function sendDmPushNotification(
   threadId?: string
 ): Promise<void> {
   try {
+    if (senderId === receiverId) return;
+
     const tokens = await getTokensForUser(receiverId);
     if (tokens.length === 0) {
 
@@ -352,31 +471,38 @@ export async function sendDmPushNotification(
 
     const body = buildPreviewBody(previewLines);
     const messageCount = previewLines.length;
+    const groupKey = buildDmNotificationKey(threadId, senderId);
+    const baseMessage = withConversationCollapse(
+      {
+        title: senderName,
+        ...(messageCount > 1 ? { subtitle: `${messageCount} new messages` } : {}),
+        body,
+        sound: 'default',
+        priority: 'high',
+        data: {
+          type: 'dm',
+          senderId,
+          receiverId,
+          threadId: threadId || null,
+          previewLines: previewLines.slice(-MAX_PREVIEW_MESSAGES),
+        },
+      },
+      groupKey,
+    );
 
     const messages: PushMessage[] = tokens.map((token) => ({
       to: token,
-      title: senderName,
-      ...(messageCount > 1 ? { subtitle: `${messageCount} new messages` } : {}),
-      body,
-      sound: 'default',
-      data: {
-        type: 'dm',
-        senderId,
-        receiverId,
-        threadId: threadId || null,
-        groupKey: `dm:${senderId}`,
-        previewLines: previewLines.slice(-MAX_PREVIEW_MESSAGES),
-      },
+      ...baseMessage,
     }));
 
     await sendExpoPush(messages);
   } catch (err: any) {
-
+    console.error('[PushNotification] sendDmPushNotification error:', err?.message || err);
   }
 }
 
 /**
- * Send push notifications to offline members of a channel when a new message is sent.
+ * Send push notifications to eligible channel members when a new message is sent.
  */
 export async function sendChannelPushNotification(
   senderId: string,
@@ -387,12 +513,12 @@ export async function sendChannelPushNotification(
     // 1) Get channel info.
     const { data: channel, error: channelError } = await supabase
       .from('channels')
-      .select('name, server_id')
+      .select('name, server_id, channel_type, allowed_role_ids')
       .eq('id', channelId)
       .single();
 
     if (channelError || !channel) {
-
+      console.error('[PushNotification] Could not find channel:', channelId, channelError?.message);
       return;
     }
 
@@ -404,91 +530,156 @@ export async function sendChannelPushNotification(
       .neq('user_id', senderId);
 
     if (membersError || !members || members.length === 0) {
+      if (membersError) console.error('[PushNotification] Failed to fetch server members:', membersError.message);
       return;
     }
 
-    // 3) Keep only offline members.
-    const offlineUserIds: string[] = [];
-    for (const member of members) {
-      const localSocket = userSocketMap.get(member.user_id);
-      if (localSocket) continue;
+    // 3) Respect channel visibility rules (avoid notifying users with no access).
+    const candidateUserIds = members.map((member: any) => member.user_id).filter(Boolean);
+    const allowedUserIds = await filterUsersWithChannelAccess(candidateUserIds, channel);
 
-      let redisSocket: string | null = null;
-      try {
-        redisSocket = await getUserSocket(member.user_id);
-      } catch (error: any) {
-
-      }
-
-      if (redisSocket) continue;
-      offlineUserIds.push(member.user_id);
-    }
-
-    if (offlineUserIds.length === 0) {
-
+    if (allowedUserIds.length === 0) {
       return;
     }
 
-    // 4) Respect channel visibility rules (avoid notifying users with no access).
-    const allowedOfflineUserIds: string[] = [];
-    for (const userId of offlineUserIds) {
-      try {
-        const canView = await checkChannelAccess(userId, channelId);
-        if (canView) allowedOfflineUserIds.push(userId);
-      } catch (error: any) {
-
-      }
-    }
-
-    if (allowedOfflineUserIds.length === 0) {
-
-      return;
-    }
-
-    // 5) Fetch push tokens for eligible users.
+    // 4) Fetch push tokens for eligible users. We do not rely on socket presence here:
+    // a mobile app can be backgrounded while Redis still has a live/stale socket.
     const { data: tokenRows, error: tokenError } = await supabase
       .from('user_push_tokens')
-      .select('push_token')
-      .in('user_id', allowedOfflineUserIds);
+      .select('user_id, push_token')
+      .in('user_id', allowedUserIds);
 
     if (tokenError || !tokenRows || tokenRows.length === 0) {
-
+      if (tokenError) console.error('[PushNotification] Failed to fetch channel push tokens:', tokenError.message);
       return;
     }
 
-    const tokens = uniqueValidTokens(tokenRows.map((row: any) => row.push_token));
-    if (tokens.length === 0) return;
-
-    // 6) Build and send push messages.
+    // 5) Build and send push messages.
     const channelName = channel.name || 'channel';
-    let previewLines = await getLatestChannelPreviewLines(channelId);
+    const groupKey = buildChannelNotificationKey(channelId);
+    const sentTokens = new Set<string>();
+    const messages: PushMessage[] = [];
 
-    if (previewLines.length === 0) {
-      const senderName = await getUsername(senderId);
-      const fallbackPreview = previewFromMessage(messagePreview, null);
-      previewLines = [`${toSingleLine(senderName, 24)}: ${fallbackPreview}`];
+    for (const recipientId of allowedUserIds) {
+      const tokens = uniqueValidTokens(
+        tokenRows
+          .filter((row: any) => row.user_id === recipientId)
+          .map((row: any) => row.push_token),
+      ).filter((token) => !sentTokens.has(token));
+
+      if (tokens.length === 0) continue;
+
+      let previewLines = await getLatestChannelPreviewLines(channelId, recipientId);
+
+      if (previewLines.length === 0) {
+        const senderName = await getUsername(senderId);
+        const fallbackPreview = previewFromMessage(messagePreview, null);
+        previewLines = [`${toSingleLine(senderName, 24)}: ${fallbackPreview}`];
+      }
+
+      const body = buildPreviewBody(previewLines);
+      const messageCount = previewLines.length;
+      const baseMessage = withConversationCollapse(
+        {
+          title: `#${channelName}`,
+          ...(messageCount > 1 ? { subtitle: `${messageCount} new messages` } : {}),
+          body,
+          sound: 'default',
+          priority: 'high',
+          data: {
+            type: 'channel_message',
+            channelId,
+            serverId: channel.server_id,
+            previewLines: previewLines.slice(-MAX_PREVIEW_MESSAGES),
+          },
+        },
+        groupKey,
+      );
+
+      for (const token of tokens) {
+        sentTokens.add(token);
+        messages.push({
+          to: token,
+          ...baseMessage,
+        });
+      }
     }
 
-    const body = buildPreviewBody(previewLines);
-    const messageCount = previewLines.length;
+    await sendExpoPush(messages);
+  } catch (err: any) {
+    console.error('[PushNotification] sendChannelPushNotification error:', err?.message || err);
+  }
+}
+
+export async function sendReactionPushNotification(
+  reactorId: string,
+  recipientId: string,
+  emoji: string,
+  payload:
+    | {
+        kind: 'channel';
+        channelId: string;
+        serverId: string;
+        channelName: string;
+        messageId: string;
+      }
+    | {
+        kind: 'dm';
+        threadId: string;
+        dmMessageId: string;
+      },
+): Promise<void> {
+  if (reactorId === recipientId) return;
+
+  try {
+    const tokens = await getTokensForUser(recipientId);
+    if (tokens.length === 0) return;
+
+    const reactorName = await getUsername(reactorId);
+    const isDm = payload.kind === 'dm';
+    const groupKey = isDm
+      ? buildDmNotificationKey(payload.threadId, reactorId)
+      : buildChannelNotificationKey(payload.channelId);
+    const title = isDm ? reactorName : `#${payload.channelName}`;
+    const reactionLine = `${reactorName} reacted ${emoji} to your message`;
+    const previewLines = isDm
+      ? await getLatestDmPreviewLines(payload.threadId, reactorId)
+      : await getLatestChannelPreviewLines(payload.channelId, recipientId);
+    const body = buildPreviewBody([...previewLines, reactionLine]);
+    const baseMessage = withConversationCollapse(
+      {
+        title,
+        body,
+        sound: 'default',
+        priority: 'high',
+        data: isDm
+          ? {
+              type: 'dm_reaction',
+              threadId: payload.threadId,
+              dmMessageId: payload.dmMessageId,
+              senderId: reactorId,
+              reactorId,
+              emoji,
+            }
+          : {
+              type: 'channel_reaction',
+              serverId: payload.serverId,
+              channelId: payload.channelId,
+              messageId: payload.messageId,
+              reactorId,
+              emoji,
+            },
+      },
+      groupKey,
+    );
 
     const messages: PushMessage[] = tokens.map((token) => ({
       to: token,
-      title: `#${channelName}`,
-      ...(messageCount > 1 ? { subtitle: `${messageCount} new messages` } : {}),
-      body,
-      sound: 'default',
-      data: {
-        type: 'channel_message',
-        channelId,
-        serverId: channel.server_id,
-        groupKey: `channel:${channelId}`,
-        previewLines: previewLines.slice(-MAX_PREVIEW_MESSAGES),
-      },
+      ...baseMessage,
     }));
 
     await sendExpoPush(messages);
   } catch (err: any) {
-
+    console.error('[PushNotification] sendReactionPushNotification error:', err?.message || err);
   }
 }

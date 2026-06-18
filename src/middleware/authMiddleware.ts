@@ -268,6 +268,14 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
       }
     }
 
+    if (mobileClient) {
+      res.status(401).json({
+        message: 'Session expired. Please log in again.',
+        code: 'SESSION_EXPIRED',
+      });
+      return;
+    }
+
     res.status(403).json({ message: 'Invalid token' });
   }
 };

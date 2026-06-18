@@ -47,6 +47,8 @@ router.get('/fetch', authenticate, messageGetController);
 router.get('/dm/:threadId', authenticate, getDmThreadMessages);
 
 // Search
+router.get('/reactions', authenticate, getMessageReactions);
+router.post('/reactions/toggle', authenticate, toggleMessageReaction);
 router.get('/search/server/:serverId', authenticate, searchChannelMessages);
 router.get('/search/dm/:threadId', authenticate, searchDmMessages);
 

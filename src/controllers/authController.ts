@@ -6,6 +6,10 @@ const ACCESS_TOKEN_MAX_AGE = 60 * 60; // 1 hour in seconds
 // Refresh token expires in 30 days
 const REFRESH_TOKEN_MAX_AGE = 60 * 60 * 24 * 30; // 30 days in seconds
 
+const MOBILE_INACTIVITY_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+const MOBILE_LAST_SEEN_COLUMNS = ['mobile_last_seen_at', 'mobileLastSeenAt'] as const;
+const USER_PROFILE_FIELDS = 'id, email, username, fullname, avatar_url, bio, date_of_birth, status, created_at';
+
 // Frontend URL for redirects (configurable via env)
 const FRONTEND_URL = process.env.FRONTEND_URL?.split(',')[0]?.trim();
 
@@ -15,6 +19,71 @@ const cookieOptions = {
   sameSite: 'none' as const,
   path: '/',
   maxAge: ACCESS_TOKEN_MAX_AGE,
+};
+
+const readMobileLastSeenAt = async (userId: string): Promise<string | null> => {
+  for (const column of MOBILE_LAST_SEEN_COLUMNS) {
+    const { data, error } = await supabaseAdmin
+      .from('users')
+      .select(column)
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (error || !data) continue;
+
+    const value = (data as Record<string, unknown>)[column];
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+
+  return null;
+};
+
+const updateMobileLastSeenAt = async (
+  userId: string,
+  timestampIso: string,
+): Promise<boolean> => {
+  for (const column of MOBILE_LAST_SEEN_COLUMNS) {
+    const { error } = await supabaseAdmin
+      .from('users')
+      .update({ [column]: timestampIso } as Record<string, string>)
+      .eq('id', userId);
+
+    if (!error) return true;
+  }
+
+  return false;
+};
+
+const isIdleTooLong = (mobileLastSeenAtIso: string, nowMs: number): boolean => {
+  const thenMs = Date.parse(mobileLastSeenAtIso);
+  if (Number.isNaN(thenMs)) return false;
+  return nowMs - thenMs > MOBILE_INACTIVITY_MAX_AGE_MS;
+};
+
+const recordMobileActivity = async (userId: string): Promise<void> => {
+  await updateMobileLastSeenAt(userId, new Date().toISOString());
+};
+
+const verifyMobileActivityWindow = async (userId: string): Promise<boolean> => {
+  const mobileLastSeenAt = await readMobileLastSeenAt(userId);
+
+  if (mobileLastSeenAt && isIdleTooLong(mobileLastSeenAt, Date.now())) {
+    return false;
+  }
+
+  await recordMobileActivity(userId);
+  return true;
+};
+
+const fetchUserProfile = async (userId: string): Promise<any | null> => {
+  const { data, error } = await supabaseAdmin
+    .from('users')
+    .select(USER_PROFILE_FIELDS)
+    .eq('id', userId)
+    .maybeSingle();
+
+  if (error || !data) return null;
+  return data;
 };
 
 
@@ -134,6 +203,8 @@ if (fetchError || !userDetails) {
 }
 
   if(isMobileApp){
+    await recordMobileActivity(user.id);
+
     res.status(200).json({
       message : "Logged In",
       user: userDetails,
@@ -185,11 +256,30 @@ export const refreshToken = async (req: Request, res: Response): Promise <void> 
   const { access_token, refresh_token: newRefreshToken, user } = data.session;
   
   if (isMobileApp) {
+    const mobileUserId = user?.id;
+
+    if (typeof mobileUserId !== 'string' || mobileUserId.length === 0) {
+      res.status(401).json({ message: 'Invalid refresh session' });
+      return;
+    }
+
+    const isMobileSessionActive = await verifyMobileActivityWindow(mobileUserId);
+
+    if (!isMobileSessionActive) {
+      res.status(401).json({
+        message: 'Session expired due to inactivity.',
+        code: 'SESSION_INACTIVE',
+      });
+      return;
+    }
+
+    const refreshedUser = await fetchUserProfile(mobileUserId);
+
     res.status(200).json({
       message: 'Token refreshed',
       accessToken: access_token,
       refreshToken: newRefreshToken,
-      user: user,
+      user: refreshedUser || user,
       expiresIn: data.session.expires_in  
     });
   } else {
@@ -346,6 +436,7 @@ export const changePassword = async (req: Request, res: Response): Promise<void>
 };
 
 export const authorize = async (req: Request, res: Response): Promise<void> => {
+  const isMobileApp = req.headers['x-client-type'] === 'Mobile';
   const authHeader = req.headers['authorization'];
   const accessToken = authHeader?.split(' ')[1];
 
@@ -361,6 +452,18 @@ export const authorize = async (req: Request, res: Response): Promise<void> => {
 
       res.status(401).json({ message: 'Unauthorized: Invalid or expired access token.' });
       return;
+    }
+
+    if (isMobileApp) {
+      const isMobileSessionActive = await verifyMobileActivityWindow(userData.user.id);
+
+      if (!isMobileSessionActive) {
+        res.status(401).json({
+          message: 'Session expired due to inactivity.',
+          code: 'SESSION_INACTIVE',
+        });
+        return;
+      }
     }
 
     res.status(200).json({
@@ -528,6 +631,8 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
     // Note: Server-side supabase.auth.getSession() won't have the user's session
 
     if (isMobileApp) {
+      await recordMobileActivity(supabaseUser.id);
+
       res.status(200).json({
         message: 'OAuth login successful',
         user: userDetails,
@@ -782,6 +887,10 @@ export const handleGoogleOAuth = async (req: Request, res: Response): Promise<vo
       expiresIn: expires_in,
       isNewUser,
     };
+
+    if (isMobileApp) {
+      await recordMobileActivity(supabaseUser.id);
+    }
 
     if (!isMobileApp) {
       res.cookie('access_token', access_token, cookieOptions);

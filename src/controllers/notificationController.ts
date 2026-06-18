@@ -1,5 +1,5 @@
 import { Response } from 'express';
-import { supabase } from '../client/supabase';
+import { supabaseAdmin as supabase } from '../client/supabase';
 import { AuthenticatedRequest } from '../middleware/authMiddleware';
 
 type DeviceType = 'ios' | 'android' | null;
@@ -55,7 +55,7 @@ export const registerPushToken = async (req: AuthenticatedRequest, res: Response
       .maybeSingle();
 
     if (existingError) {
-
+      console.error('[NotificationController] Failed to check existing push token:', existingError.message);
       res.status(500).json({ error: 'Failed to register push token' });
       return;
     }
@@ -80,14 +80,14 @@ export const registerPushToken = async (req: AuthenticatedRequest, res: Response
     }
 
     if (insertError) {
-
+      console.error('[NotificationController] Failed to insert push token:', insertError.message);
       res.status(500).json({ error: 'Failed to register push token' });
       return;
     }
 
     res.status(201).json({ message: 'Push token registered' });
   } catch (error: any) {
-
+    console.error('[NotificationController] registerPushToken error:', error?.message || error);
     res.status(500).json({ error: 'Failed to register push token' });
   }
 };
@@ -114,7 +114,7 @@ export const removePushToken = async (req: AuthenticatedRequest, res: Response):
     const { data, error } = await deleteQuery.select('push_token');
 
     if (error) {
-
+      console.error('[NotificationController] Failed to remove push token:', error.message);
       res.status(500).json({ error: 'Failed to remove push token' });
       return;
     }
@@ -124,7 +124,7 @@ export const removePushToken = async (req: AuthenticatedRequest, res: Response):
       removed: data?.length || 0,
     });
   } catch (error: any) {
-
+    console.error('[NotificationController] removePushToken error:', error?.message || error);
     res.status(500).json({ error: 'Failed to remove push token' });
   }
 };
