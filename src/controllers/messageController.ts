@@ -3,7 +3,7 @@ import { v4 } from 'uuid';
 import { supabase } from '../client/supabase';
 import { parseMentions, processMentions, resolveMentions } from '../lib/mentionParser';
 import { extractGifMediaUrl } from '../lib/messageMedia';
-import { sendChannelPushNotification, sendDmPushNotification } from '../lib/pushNotificationService';
+import { sendChannelPushNotification, sendDmPushNotification, sendReactionPushNotification } from '../lib/pushNotificationService';
 import { AuthenticatedRequest } from "../middleware/authMiddleware";
 import { getUserSocket } from "../redis/userSocketStore";
 import { getIO, userSocketMap } from "../sockets/chatSocket";
@@ -402,10 +402,10 @@ async function getDmReactionMap(dmMessageIds: string[]): Promise<Map<string, Mes
     return buildReactionMap((data || []) as Array<{ dm_message_id: string | null; emoji: string }>, 'dm_message_id');
 }
 
-async function getChannelMessageContext(messageId: string): Promise<{ channelId: string } | null> {
+async function getChannelMessageContext(messageId: string): Promise<{ channelId: string; senderId: string } | null> {
     const { data, error } = await supabase
         .from('messages')
-        .select('id, channel_id')
+        .select('id, channel_id, sender_id')
         .eq('id', messageId)
         .maybeSingle();
 
@@ -413,17 +413,17 @@ async function getChannelMessageContext(messageId: string): Promise<{ channelId:
         throw error;
     }
 
-    if (!data?.channel_id) {
+    if (!data?.channel_id || !data?.sender_id) {
         return null;
     }
 
-    return { channelId: data.channel_id };
+    return { channelId: data.channel_id, senderId: data.sender_id };
 }
 
-async function getDmMessageContext(messageId: string): Promise<{ threadId: string; user1Id: string; user2Id: string } | null> {
+async function getDmMessageContext(messageId: string): Promise<{ threadId: string; user1Id: string; user2Id: string; senderId: string } | null> {
     const { data: message, error: messageError } = await supabase
         .from('dm_messages')
-        .select('id, thread_id')
+        .select('id, thread_id, sender_id')
         .eq('id', messageId)
         .maybeSingle();
 
@@ -453,6 +453,7 @@ async function getDmMessageContext(messageId: string): Promise<{ threadId: strin
         threadId: thread.id,
         user1Id: thread.user1_id,
         user2Id: thread.user2_id,
+        senderId: message.sender_id,
     };
 }
 
@@ -1011,8 +1012,8 @@ export const messageGetController = async (req: Request, res: Response): Promise
 }
 
 type ReactionTarget =
-    | { kind: 'channel'; messageId: string; channelId: string }
-    | { kind: 'dm'; messageId: string; threadId: string; user1Id: string; user2Id: string };
+    | { kind: 'channel'; messageId: string; channelId: string; messageOwnerId: string }
+    | { kind: 'dm'; messageId: string; threadId: string; user1Id: string; user2Id: string; messageOwnerId: string };
 
 async function resolveReactionTarget(userId: string, messageId?: string, dmMessageId?: string): Promise<ReactionTarget | { error: string; status: number }> {
     if ((messageId && dmMessageId) || (!messageId && !dmMessageId)) {
@@ -1034,6 +1035,7 @@ async function resolveReactionTarget(userId: string, messageId?: string, dmMessa
             kind: 'channel',
             messageId,
             channelId: context.channelId,
+            messageOwnerId: context.senderId,
         };
     }
 
@@ -1052,6 +1054,7 @@ async function resolveReactionTarget(userId: string, messageId?: string, dmMessa
         threadId: context.threadId,
         user1Id: context.user1Id,
         user2Id: context.user2Id,
+        messageOwnerId: context.senderId,
     };
 }
 
@@ -1188,6 +1191,44 @@ export const toggleMessageReaction = async (
       target.kind === "channel"
         ? await getMessageReactionSummary(target.messageId)
         : await getDmMessageReactionSummary(target.messageId);
+
+    if (action === "added" && target.messageOwnerId !== userId) {
+      try {
+        if (target.kind === "channel") {
+          const { data: channel } = await supabase
+            .from("channels")
+            .select("name, server_id")
+            .eq("id", target.channelId)
+            .maybeSingle();
+
+          await sendReactionPushNotification(
+            userId,
+            target.messageOwnerId,
+            normalizedEmoji,
+            {
+              kind: "channel",
+              channelId: target.channelId,
+              serverId: channel?.server_id || "",
+              channelName: channel?.name || "channel",
+              messageId: target.messageId,
+            }
+          );
+        } else {
+          await sendReactionPushNotification(
+            userId,
+            target.messageOwnerId,
+            normalizedEmoji,
+            {
+              kind: "dm",
+              threadId: target.threadId,
+              dmMessageId: target.messageId,
+            }
+          );
+        }
+      } catch (pushError: any) {
+        console.error("Failed to send reaction push notification:", pushError?.message || pushError);
+      }
+    }
 
     await emitReactionUpdate(target, reactions);
 
@@ -1365,6 +1406,7 @@ async function resolvePinTarget(userId: string, messageId?: string, dmMessageId?
             kind: 'channel',
             messageId,
             channelId: context.channelId,
+            messageOwnerId: context.senderId,
         };
     }
 
@@ -1383,6 +1425,7 @@ async function resolvePinTarget(userId: string, messageId?: string, dmMessageId?
         threadId: context.threadId,
         user1Id: context.user1Id,
         user2Id: context.user2Id,
+        messageOwnerId: context.senderId,
     };
 }
 
