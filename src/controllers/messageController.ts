@@ -929,7 +929,7 @@ export const channelmessagePostController = async (req: AuthenticatedRequest, re
         const io = getIO();
         io.to(channel_id).emit("new_message", payloadMessage);
 
-        // Fire-and-forget push for offline users.
+        // Fire-and-forget push for eligible users; mobile apps may be backgrounded with a stale/live socket.
         const channelPreview = (content || '').trim() || getAttachmentPreview(payloadMessage) || '[Attachment]';
         sendChannelPushNotification(sender_id, channel_id, channelPreview).catch(console.error);
 

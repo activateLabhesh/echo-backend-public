@@ -5,10 +5,7 @@
  * Calls are fire-and-forget and should never block message delivery.
  */
 
-import { supabase } from '../client/supabase';
-import { checkChannelAccess } from '../controllers/channelController';
-import { getUserSocket } from '../redis/userSocketStore';
-import { userSocketMap } from '../sockets/chatSocket';
+import { supabaseAdmin as supabase } from '../client/supabase';
 
 const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
 const EXPO_BATCH_SIZE = 100;
@@ -22,7 +19,7 @@ type PushMessage = {
   body: string;
   data?: Record<string, any>;
   sound?: string;
-  channelId?: string;
+  priority?: 'default' | 'normal' | 'high';
   collapseId?: string;
   tag?: string;
 };
@@ -38,7 +35,6 @@ type AttachmentPreviewRow = {
 const MAX_PREVIEW_MESSAGES = 3;
 const PREVIEW_LINE_MAX = 90;
 const PREVIEW_BODY_MAX = 360;
-const DEFAULT_ANDROID_CHANNEL_ID = 'default';
 
 function isExpoPushToken(token: string): boolean {
   return EXPO_TOKEN_RE.test(token);
@@ -56,6 +52,10 @@ function uniqueValidTokens(tokens: Array<string | null | undefined>): string[] {
   return Array.from(unique);
 }
 
+function redactPushTokens(value: string): string {
+  return value.replace(/(?:ExponentPushToken|ExpoPushToken)\[[^\]]+\]/g, 'ExpoPushToken[redacted]');
+}
+
 async function removeInvalidTokensFromDb(tokens: string[]): Promise<void> {
   if (tokens.length === 0) return;
 
@@ -66,10 +66,9 @@ async function removeInvalidTokensFromDb(tokens: string[]): Promise<void> {
     .in('push_token', uniqueTokens);
 
   if (error) {
-
+    console.error('[PushNotification] Failed to remove invalid push tokens:', error.message);
     return;
   }
-
 }
 
 /**
@@ -82,7 +81,7 @@ async function getTokensForUser(userId: string): Promise<string[]> {
     .eq('user_id', userId);
 
   if (error) {
-
+    console.error('[PushNotification] Failed to fetch push tokens:', error.message);
     return [];
   }
 
@@ -195,10 +194,9 @@ function buildChannelNotificationKey(channelId: string): string {
 function withConversationCollapse<T extends Omit<PushMessage, 'to'> & { data?: Record<string, any> }>(
   message: T,
   groupKey: string,
-): T & Pick<PushMessage, 'channelId' | 'collapseId' | 'tag'> {
+): T & Pick<PushMessage, 'collapseId' | 'tag'> {
   return {
     ...message,
-    channelId: DEFAULT_ANDROID_CHANNEL_ID,
     collapseId: groupKey,
     tag: groupKey,
     data: {
@@ -208,15 +206,79 @@ function withConversationCollapse<T extends Omit<PushMessage, 'to'> & { data?: R
   };
 }
 
-async function isUserOnline(userId: string): Promise<boolean> {
-  if (userSocketMap.has(userId)) return true;
+function roleRowsByUser(rows: any[]): Map<string, any[]> {
+  const rolesByUser = new Map<string, any[]>();
 
-  try {
-    const socketId = await getUserSocket(userId);
-    return Boolean(socketId);
-  } catch {
-    return false;
+  rows.forEach((row) => {
+    if (!row?.user_id) return;
+    const existing = rolesByUser.get(row.user_id) || [];
+    const role = Array.isArray(row.roles) ? row.roles[0] : row.roles;
+    existing.push({ ...row, roles: role });
+    rolesByUser.set(row.user_id, existing);
+  });
+
+  return rolesByUser;
+}
+
+async function filterUsersWithChannelAccess(
+  userIds: string[],
+  channel: { server_id: string; channel_type?: string | null; allowed_role_ids?: string[] | null }
+): Promise<string[]> {
+  if (userIds.length === 0) return [];
+
+  const channelType = channel.channel_type || 'normal';
+  if (channelType === 'normal' || channelType === 'read_only') {
+    return userIds;
   }
+
+  if (channelType !== 'role_restricted') {
+    return [];
+  }
+
+  const allowedRoleIds = new Set(channel.allowed_role_ids || []);
+  const { data: server, error: serverError } = await supabase
+    .from('servers')
+    .select('owner_id')
+    .eq('id', channel.server_id)
+    .maybeSingle();
+
+  if (serverError) {
+    console.error('[PushNotification] Failed to fetch server owner:', serverError.message);
+  }
+
+  const { data: userRoles, error } = await supabase
+    .from('user_roles')
+    .select(`
+      user_id,
+      role_id,
+      roles!inner(id, name, role_type, server_id)
+    `)
+    .in('user_id', userIds)
+    .eq('roles.server_id', channel.server_id);
+
+  if (error) {
+    console.error('[PushNotification] Failed to check channel roles:', error.message);
+    return [];
+  }
+
+  const rolesByUser = roleRowsByUser(userRoles || []);
+
+  return userIds.filter((userId) => {
+    if (server?.owner_id === userId) return true;
+
+    const roles = rolesByUser.get(userId) || [];
+    return roles.some((row) => {
+      const roleName = (row.roles?.name || '').toString().toLowerCase();
+      const roleType = (row.roles?.role_type || '').toString().toLowerCase();
+      return (
+        allowedRoleIds.has(row.role_id) ||
+        roleName === 'admin' ||
+        roleType === 'admin' ||
+        roleName === 'owner' ||
+        roleType === 'owner'
+      );
+    });
+  });
 }
 
 async function getLatestDmPreviewLines(threadId: string, senderId: string): Promise<string[]> {
@@ -329,19 +391,25 @@ async function sendExpoPush(messages: PushMessage[]): Promise<void> {
 
   for (const chunk of chunks) {
     try {
+      const headers: Record<string, string> = {
+        Accept: 'application/json',
+        'Accept-Encoding': 'gzip, deflate',
+        'Content-Type': 'application/json',
+      };
+      const expoAccessToken = process.env.EXPO_ACCESS_TOKEN?.trim();
+      if (expoAccessToken) {
+        headers.Authorization = `Bearer ${expoAccessToken}`;
+      }
+
       const response = await fetch(EXPO_PUSH_URL, {
         method: 'POST',
-        headers: {
-          Accept: 'application/json',
-          'Accept-Encoding': 'gzip, deflate',
-          'Content-Type': 'application/json',
-        },
+        headers,
         body: JSON.stringify(chunk),
       });
 
       if (!response.ok) {
-        const text = await response.text();
-
+        const text = redactPushTokens(await response.text());
+        console.error('[PushNotification] Expo Push API error:', response.status, text);
         continue;
       }
 
@@ -354,6 +422,7 @@ async function sendExpoPush(messages: PushMessage[]): Promise<void> {
         if (ticket?.status !== 'error') continue;
 
         const ticketError = ticket?.message || ticket?.details?.error || 'unknown_error';
+        console.error('[PushNotification] Expo ticket error:', redactPushTokens(String(ticketError)));
 
         // Expo recommends removing DeviceNotRegistered tokens.
         if (ticket?.details?.error === 'DeviceNotRegistered') {
@@ -366,7 +435,7 @@ async function sendExpoPush(messages: PushMessage[]): Promise<void> {
       }
 
     } catch (err: any) {
-
+      console.error('[PushNotification] Failed to call Expo Push API:', err?.message || err);
     }
   }
 }
@@ -409,6 +478,7 @@ export async function sendDmPushNotification(
         ...(messageCount > 1 ? { subtitle: `${messageCount} new messages` } : {}),
         body,
         sound: 'default',
+        priority: 'high',
         data: {
           type: 'dm',
           senderId,
@@ -427,12 +497,12 @@ export async function sendDmPushNotification(
 
     await sendExpoPush(messages);
   } catch (err: any) {
-
+    console.error('[PushNotification] sendDmPushNotification error:', err?.message || err);
   }
 }
 
 /**
- * Send push notifications to offline members of a channel when a new message is sent.
+ * Send push notifications to eligible channel members when a new message is sent.
  */
 export async function sendChannelPushNotification(
   senderId: string,
@@ -443,12 +513,12 @@ export async function sendChannelPushNotification(
     // 1) Get channel info.
     const { data: channel, error: channelError } = await supabase
       .from('channels')
-      .select('name, server_id')
+      .select('name, server_id, channel_type, allowed_role_ids')
       .eq('id', channelId)
       .single();
 
     if (channelError || !channel) {
-
+      console.error('[PushNotification] Could not find channel:', channelId, channelError?.message);
       return;
     }
 
@@ -460,65 +530,37 @@ export async function sendChannelPushNotification(
       .neq('user_id', senderId);
 
     if (membersError || !members || members.length === 0) {
+      if (membersError) console.error('[PushNotification] Failed to fetch server members:', membersError.message);
       return;
     }
 
-    // 3) Keep only offline members.
-    const offlineUserIds: string[] = [];
-    for (const member of members) {
-      const localSocket = userSocketMap.get(member.user_id);
-      if (localSocket) continue;
+    // 3) Respect channel visibility rules (avoid notifying users with no access).
+    const candidateUserIds = members.map((member: any) => member.user_id).filter(Boolean);
+    const allowedUserIds = await filterUsersWithChannelAccess(candidateUserIds, channel);
 
-      let redisSocket: string | null = null;
-      try {
-        redisSocket = await getUserSocket(member.user_id);
-      } catch (error: any) {
-
-      }
-
-      if (redisSocket) continue;
-      offlineUserIds.push(member.user_id);
-    }
-
-    if (offlineUserIds.length === 0) {
-
+    if (allowedUserIds.length === 0) {
       return;
     }
 
-    // 4) Respect channel visibility rules (avoid notifying users with no access).
-    const allowedOfflineUserIds: string[] = [];
-    for (const userId of offlineUserIds) {
-      try {
-        const canView = await checkChannelAccess(userId, channelId);
-        if (canView) allowedOfflineUserIds.push(userId);
-      } catch (error: any) {
-
-      }
-    }
-
-    if (allowedOfflineUserIds.length === 0) {
-
-      return;
-    }
-
-    // 5) Fetch push tokens for eligible users.
+    // 4) Fetch push tokens for eligible users. We do not rely on socket presence here:
+    // a mobile app can be backgrounded while Redis still has a live/stale socket.
     const { data: tokenRows, error: tokenError } = await supabase
       .from('user_push_tokens')
       .select('user_id, push_token')
-      .in('user_id', allowedOfflineUserIds);
+      .in('user_id', allowedUserIds);
 
     if (tokenError || !tokenRows || tokenRows.length === 0) {
-
+      if (tokenError) console.error('[PushNotification] Failed to fetch channel push tokens:', tokenError.message);
       return;
     }
 
-    // 6) Build and send push messages.
+    // 5) Build and send push messages.
     const channelName = channel.name || 'channel';
     const groupKey = buildChannelNotificationKey(channelId);
     const sentTokens = new Set<string>();
     const messages: PushMessage[] = [];
 
-    for (const recipientId of allowedOfflineUserIds) {
+    for (const recipientId of allowedUserIds) {
       const tokens = uniqueValidTokens(
         tokenRows
           .filter((row: any) => row.user_id === recipientId)
@@ -543,6 +585,7 @@ export async function sendChannelPushNotification(
           ...(messageCount > 1 ? { subtitle: `${messageCount} new messages` } : {}),
           body,
           sound: 'default',
+          priority: 'high',
           data: {
             type: 'channel_message',
             channelId,
@@ -564,7 +607,7 @@ export async function sendChannelPushNotification(
 
     await sendExpoPush(messages);
   } catch (err: any) {
-
+    console.error('[PushNotification] sendChannelPushNotification error:', err?.message || err);
   }
 }
 
@@ -589,9 +632,6 @@ export async function sendReactionPushNotification(
   if (reactorId === recipientId) return;
 
   try {
-    const online = await isUserOnline(recipientId);
-    if (online) return;
-
     const tokens = await getTokensForUser(recipientId);
     if (tokens.length === 0) return;
 
@@ -611,6 +651,7 @@ export async function sendReactionPushNotification(
         title,
         body,
         sound: 'default',
+        priority: 'high',
         data: isDm
           ? {
               type: 'dm_reaction',
