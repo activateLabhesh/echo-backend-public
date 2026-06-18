@@ -101,7 +101,7 @@ export const updateProfile = async (req: AuthenticatedRequest, res: Response): P
     });
 
   } catch (error: any) {
-
+    console.log(error)
     res.status(500).json({ message: 'An internal server error occurred.' });
   }
 };

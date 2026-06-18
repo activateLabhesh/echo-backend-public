@@ -28,7 +28,7 @@ export const markUserOnline = async (userId: string): Promise<void> => {
 
   const { error } = await supabaseAdmin
     .from("users")
-    .update({ status: "online" })
+    .update({ status: "ONLINE" })
     .eq("id", userId);
 
   if (error) {

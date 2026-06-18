@@ -6,7 +6,7 @@ import { saveDMMessage } from "../lib/dmMessageServices";
 import { saveMessage } from "../lib/messageServices";
 import { extractGifMediaUrl } from "../lib/messageMedia";
 import { markUserOffline, markUserOnline } from "../lib/userPresence";
-import { sendChannelPushNotification, sendDmPushNotification } from "../lib/pushNotificationService";
+import { sendChannelPushNotification, sendDmPushNotification } from "../notifications/pushNotificationService";
 import { deleteUserSocket, getUserSocket, setUserSocket } from "../redis/userSocketStore";
 
 export const userSocketMap = new Map<string, string>(); // Map<userId, socketId>
@@ -89,7 +89,7 @@ export const setupChatSocket = (io: Server) => {
       try {
         await setUserSocket(activeUserId, socket.id);
         await markUserOnline(activeUserId);
-        socket.emit("presence:heartbeat_ack", { status: "online", timestamp: new Date().toISOString() });
+        socket.emit("presence:heartbeat_ack", { status: "ONLINE", timestamp: new Date().toISOString() });
       } catch (error) {
         console.error("[chatSocket] Failed to process presence heartbeat:", error);
       }

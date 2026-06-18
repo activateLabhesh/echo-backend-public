@@ -387,6 +387,7 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
   const refresh_token = req.body.refresh_token || req.body.refreshToken || '';
 
   if (!access_token) {
+    console.log("We are here! access_token not there..")
     res.status(401).json({ message: 'Access token required' });
     return;
   }
@@ -396,11 +397,16 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
     const { data: userData, error: userError } = await supabase.auth.getUser(access_token);
 
     if (userError || !userData?.user) {
+      console.error("getUser error:", userError);
+      console.error("token:", access_token?.slice(0, 20));
 
-      res.status(401).json({ message: 'Invalid access token' });
+      res.status(401).json({
+        message: "Invalid access token",
+        error: userError?.message,
+      });
+
       return;
     }
-
     const supabaseUser = userData.user;
 
     // Check if user exists in our users table by ID
@@ -481,7 +487,7 @@ export const handleOAuthUser = async (req: Request, res: Response): Promise<void
         username: username,
         fullname: supabaseUser.user_metadata?.full_name || '',
         avatar_url: supabaseUser.user_metadata?.avatar_url || null,
-        status: 'offline',
+        status: 'OFFLINE',
         bio: '',
         date_of_birth: null,
       };
@@ -621,6 +627,9 @@ export const handleGoogleOAuth = async (req: Request, res: Response): Promise<vo
         });
       }
     }
+
+
+    console.log("generating the supabase session for you");
 
     // 3. Generate Supabase session via Admin generateLink + verifyOtp
     //    This bypasses the nonce requirement that breaks iOS Google Sign-In

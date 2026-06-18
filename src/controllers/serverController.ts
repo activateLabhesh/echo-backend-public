@@ -160,19 +160,27 @@ export const screation = async (req: AuthenticatedRequest, res: Response): Promi
 
     // --- 4. Create Owner and Admin roles for the server ---
     // Create Owner role
-    const { error: ownerRoleError } = await supabase
+    const { data: existingOwnerRoles, error: ownerRoleLookupError } = await supabase
       .from('roles')
-      .insert({
-        server_id: newServerId,
-        name: 'Owner',
-        color: '#f1c40f',
-        position: 1000,
-        role_type: 'owner',
-        is_self_assignable: false
-      });
+      .select('id')
+      .eq('server_id', newServerId)
+      .eq('role_type', 'owner');
 
-    if (ownerRoleError) {
+    if (!ownerRoleLookupError && (!existingOwnerRoles || existingOwnerRoles.length === 0)) {
+      const { error: ownerRoleError } = await supabase
+        .from('roles')
+        .insert({
+          server_id: newServerId,
+          name: 'Owner',
+          color: '#f1c40f',
+          position: 1000,
+          role_type: 'owner',
+          is_self_assignable: false
+        });
 
+      if (ownerRoleError) {
+
+      }
     }
 
     // Create Admin role

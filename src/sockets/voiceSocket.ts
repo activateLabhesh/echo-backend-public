@@ -238,6 +238,16 @@ class RetryManager {
 export function setupVoiceSocket() {
   const io = getIO();
 
+  const resolveChannelId = (
+    payload: string | { channelId?: string } | null | undefined
+  ): string | null => {
+    if (typeof payload === 'string') {
+      return payload.trim() || null;
+    }
+
+    return payload?.channelId?.trim() || null;
+  };
+
   if (io) {
     console.log("Voice Socket.IO instance set successfully.");
     io.on('connection', (socket) => {
@@ -319,9 +329,24 @@ export function setupVoiceSocket() {
     };
 
     // Enhanced join_voice_channel handler with error handling
-    socket.on('join_voice_channel', async (channelId: string) => {
+    socket.on('join_voice_channel', async (payload: string | { channelId?: string }) => {
+      let channelId: string | undefined;
       try {
         updateActivity();
+
+        channelId = resolveChannelId(payload) || undefined;
+        if (!channelId) {
+          const error = VoiceErrorHandler.createError(
+            VoiceErrorCode.INVALID_DATA,
+            'Join voice channel missing channelId',
+            socket.id,
+            getUserIdFromSocketId(socket.id) || undefined,
+            undefined
+          );
+          VoiceErrorHandler.logError(error);
+          socket.emit('voice_error', error);
+          return;
+        }
         
         const userId = getUserIdFromSocketId(socket.id);
         
@@ -691,9 +716,12 @@ export function setupVoiceSocket() {
     // --- NEW HANDLERS FROM FRONTEND ---
 
     // Handle when a user leaves the channel
-    socket.on('leave_voice_channel', (channelId: string) => {
+    socket.on('leave_voice_channel', (payload: string | { channelId?: string }) => {
+      let channelId: string | undefined;
       try {
         updateActivity();
+
+        channelId = resolveChannelId(payload) || undefined;
         
         if (!channelId) {
           const error = VoiceErrorHandler.createError(
