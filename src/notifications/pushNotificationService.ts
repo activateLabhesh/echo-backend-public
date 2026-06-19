@@ -89,17 +89,28 @@ async function getTokensForUser(userId: string): Promise<string[]> {
 }
 
 /**
- * Fetch username by user ID.
+ * Fetch notification profile by user ID.
  */
-async function getUsername(userId: string): Promise<string> {
+async function getUserNotificationProfile(userId: string): Promise<{ username: string; avatarUrl: string | null }> {
   const { data, error } = await supabase
     .from('users')
-    .select('username')
+    .select('username, avatar_url')
     .eq('id', userId)
     .single();
 
-  if (error || !data) return 'Someone';
-  return data.username || 'Someone';
+  if (error || !data) {
+    return { username: 'Someone', avatarUrl: null };
+  }
+
+  return {
+    username: data.username || 'Someone',
+    avatarUrl: data.avatar_url || null,
+  };
+}
+
+async function getUsername(userId: string): Promise<string> {
+  const profile = await getUserNotificationProfile(userId);
+  return profile.username;
 }
 
 function normalizeMediaUrls(mediaUrl: unknown): string[] {
@@ -459,7 +470,7 @@ export async function sendDmPushNotification(
       return;
     }
 
-    const senderName = await getUsername(senderId);
+    const senderProfile = await getUserNotificationProfile(senderId);
 
     let previewLines: string[] = [];
     if (threadId) {
@@ -474,7 +485,7 @@ export async function sendDmPushNotification(
     const groupKey = buildDmNotificationKey(threadId, senderId);
     const baseMessage = withConversationCollapse(
       {
-        title: senderName,
+        title: senderProfile.username,
         ...(messageCount > 1 ? { subtitle: `${messageCount} new messages` } : {}),
         body,
         sound: 'default',
@@ -482,6 +493,7 @@ export async function sendDmPushNotification(
         data: {
           type: 'dm',
           senderId,
+          senderAvatarUrl: senderProfile.avatarUrl,
           receiverId,
           threadId: threadId || null,
           previewLines: previewLines.slice(-MAX_PREVIEW_MESSAGES),
@@ -635,7 +647,8 @@ export async function sendReactionPushNotification(
     const tokens = await getTokensForUser(recipientId);
     if (tokens.length === 0) return;
 
-    const reactorName = await getUsername(reactorId);
+    const reactorProfile = await getUserNotificationProfile(reactorId);
+    const reactorName = reactorProfile.username;
     const isDm = payload.kind === 'dm';
     const groupKey = isDm
       ? buildDmNotificationKey(payload.threadId, reactorId)
@@ -658,7 +671,9 @@ export async function sendReactionPushNotification(
               threadId: payload.threadId,
               dmMessageId: payload.dmMessageId,
               senderId: reactorId,
+              senderAvatarUrl: reactorProfile.avatarUrl,
               reactorId,
+              reactorAvatarUrl: reactorProfile.avatarUrl,
               emoji,
             }
           : {
