@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import {supabase,supabaseAdmin} from '../client/supabase'
+import { refreshSupabaseSession } from '../lib/sessionRefresh';
 
 // Access token expires in 1 hour (matches Supabase JWT expiration)
 const ACCESS_TOKEN_MAX_AGE = 60 * 60; // 1 hour in seconds
@@ -246,7 +247,7 @@ export const refreshToken = async (req: Request, res: Response): Promise <void> 
     return
   }
 
-  const { data, error } = await supabase.auth.refreshSession({ refresh_token });
+  const { data, error } = await refreshSupabaseSession(refresh_token);
 
   if (error || !data.session) {
     res.status(401).json({ message: 'Invalid refresh token' });
