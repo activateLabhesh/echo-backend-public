@@ -7,8 +7,12 @@ import { MessageReactionSummary } from '../types/reaction.types';
 import * as attachmentRepository from '../repositories/attachmentRepository';
 import * as reactionRepository from '../repositories/reactionRepository';
 import * as dmRepository from '../repositories/dmRepository';
+import * as DmMessageTypes from '../types/dmMessage.types';
 import { getAttachmentPreview, normalizeMediaUrls, resolveGifMediaUrl } from '../utils/message';
 import { uploadMessageAttachments } from './messageService';
+import { getCacheRedisClient } from '../redis/cacheClient';
+
+
 
 type UploadedFile = {
     buffer: Buffer;
@@ -16,6 +20,73 @@ type UploadedFile = {
     originalname?: string;
     size: number;
 };
+
+
+import { supabase } from '../client/supabase';
+import { extractGifMediaUrl } from '../utils/media';
+
+// Interface for the data required to save a DM
+// It now expects thread_id to be provided directly.
+export interface DMmessageData {
+  threadId: string; // The pre-formed thread ID
+  senderId: string;
+  message: string;
+  media_url?: string | null;
+}
+
+
+
+/**
+ * Saves a direct message to the database using a pre-existing thread_id.
+ * @param data - The message data including the thread_id, sender, and content.
+ */
+export const saveDMMessage = async (data: DMmessageData) => {
+  const gifMediaUrl = extractGifMediaUrl(data.message);
+  const message = gifMediaUrl ? '' : data.message;
+  const mediaUrl = data.media_url || gifMediaUrl;
+
+  // 1. Generate a unique ID for the message itself
+
+  // 2. Insert the data into the 'dm_messages' table with the correct fields
+  const { data: savedMessage, error } = await supabase
+    .from('dm_messages')
+    .insert({
+      thread_id: data.threadId, // Use the thread_id passed in the data object
+      sender_id: data.senderId,
+      content: message,
+      // Use the provided media_url or default to null if it's not present
+      media_url: mediaUrl || null,
+    })
+    .select(`
+      *,
+      sender:users!sender_id (
+        id,
+        username,
+        avatar_url
+      )
+    `) // JOIN users table to get sender info for real-time display
+    .single();
+
+  if (error) {
+
+    throw new Error('Could not save the direct message.');
+  }
+
+  if (mediaUrl) {
+
+  }
+
+  // Flatten sender info for frontend consistency (matches REST API response structure)
+  const enrichedMessage = {
+    ...savedMessage,
+    username: savedMessage.sender?.username || null,
+    sender_avatar_url: savedMessage.sender?.avatar_url || null,
+    media_urls: normalizeMediaUrls(savedMessage.media_url),
+  };
+
+  return enrichedMessage;
+};
+
 
 function statusError(message: string, status: number): Error & { status?: number } {
     return Object.assign(new Error(message), { status });
@@ -99,8 +170,8 @@ function buildMediaItems(messages: Array<any>, attachmentsByMessageId: Map<strin
     return items.sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime());
 }
 
-function dedupeThreadsByOtherUser(threads: dmRepository.DmThread[], userId: string): dmRepository.DmThread[] {
-    const seenPairs = new Map<string, dmRepository.DmThread>();
+function dedupeThreadsByOtherUser(threads: DmMessageTypes.DmThread[], userId: string): DmMessageTypes.DmThread[] {
+    const seenPairs = new Map<string, DmMessageTypes.DmThread>();
 
     threads.forEach((thread) => {
         const otherUserId = thread.user1_id === userId ? thread.user2_id : thread.user1_id;
@@ -112,7 +183,7 @@ function dedupeThreadsByOtherUser(threads: dmRepository.DmThread[], userId: stri
     return Array.from(seenPairs.values());
 }
 
-async function getAccessibleThread(userId: string, threadId: string): Promise<dmRepository.DmThread> {
+async function getAccessibleThread(userId: string, threadId: string): Promise<DmMessageTypes.DmThread> {
     const thread = await dmRepository.fetchDmThread(threadId);
 
     if (!thread || (thread.user1_id !== userId && thread.user2_id !== userId)) {
@@ -122,7 +193,7 @@ async function getAccessibleThread(userId: string, threadId: string): Promise<dm
     return thread;
 }
 
-async function getOrCreateThread(senderId: string, receiverId: string): Promise<dmRepository.DmThread> {
+async function getOrCreateThread(senderId: string, receiverId: string): Promise<DmMessageTypes.DmThread> {
     const [user1Id, user2Id] = senderId < receiverId
         ? [senderId, receiverId]
         : [receiverId, senderId];
@@ -269,103 +340,122 @@ export async function getDmThreadMessages(threadId: string, offset: number): Pro
 
 export async function getDmMessages(userId: string, offset: number, shouldPaginate: boolean) {
     const pageSize = 15;
-    const userThreads = dedupeThreadsByOtherUser(await dmRepository.fetchUserDmThreads(userId), userId);
 
-    if (userThreads.length === 0) {
-        return { threads: [] };
+    const redis = getCacheRedisClient();
+
+    if (redis.status === 'wait') {
+        await redis.connect();
     }
 
-    const threadIds = userThreads.map((thread) => thread.id);
-    const otherUserIds = userThreads.map((thread) =>
-        thread.user1_id === userId ? thread.user2_id : thread.user1_id
-    );
+    const cacheKey = `user:${userId}:dmMessages`;
 
-    const [users, readStatusMap] = await Promise.all([
-        dmRepository.fetchUsersByIds(otherUserIds),
-        getThreadReadStatusMap(userId, threadIds),
-    ]);
+    const cachedThreads = await redis.get(cacheKey);
 
-    const usersMap = new Map<string, dmRepository.DmThreadUser>();
-    users.forEach((user) => usersMap.set(user.id, user));
+    if (cachedThreads) {
+        const parsedThreads = JSON.parse(cachedThreads);
+        return parsedThreads;
+    } else {
+        const userThreads = dedupeThreadsByOtherUser(await dmRepository.fetchUserDmThreads(userId), userId);
 
-    const threadSummaries = await Promise.all(
-        userThreads.map(async (thread) => {
-            const lastReadAt = readStatusMap.get(thread.id);
-            const [latestMessage, unreadCount] = await Promise.all([
-                dmRepository.fetchThreadLatestMessage(thread.id),
-                dmRepository.fetchThreadUnreadCount(thread.id, userId, lastReadAt),
-            ]);
+        if (userThreads.length === 0) {
+            return { threads: [] };
+        }
 
-            return {
-                thread,
-                latestMessage,
-                unreadCount,
-            };
-        })
-    );
+        const threadIds = userThreads.map((thread) => thread.id);
+        const otherUserIds = userThreads.map((thread) =>
+            thread.user1_id === userId ? thread.user2_id : thread.user1_id
+        );
 
-    threadSummaries.sort(
-        (a, b) =>
-            new Date(b.latestMessage?.timestamp || 0).getTime() -
-            new Date(a.latestMessage?.timestamp || 0).getTime()
-    );
+        const [users, readStatusMap] = await Promise.all([
+            dmRepository.fetchUsersByIds(otherUserIds),
+            getThreadReadStatusMap(userId, threadIds),
+        ]);
 
-    const paginatedSummaries = shouldPaginate
-        ? threadSummaries.slice(offset, offset + pageSize)
-        : threadSummaries;
-    const latestAttachmentsByMessageId = await attachmentRepository.fetchDmAttachmentMap(
-        paginatedSummaries
-            .map(({ latestMessage }) => latestMessage?.id)
-            .filter((id): id is string => typeof id === 'string')
-    );
+        const usersMap = new Map<string, DmMessageTypes.DmThreadUser>();
+        users.forEach((user) => usersMap.set(user.id, user));
 
-    const includeThreadMessages = !shouldPaginate;
-    const threadMessagesByThreadId = includeThreadMessages
-        ? new Map<string, { messages: Array<any>; hasMore: boolean }>()
-        : null;
+        const threadSummaries = await Promise.all(
+            userThreads.map(async (thread) => {
+                const lastReadAt = readStatusMap.get(thread.id);
+                const [latestMessage, unreadCount] = await Promise.all([
+                    dmRepository.fetchThreadLatestMessage(thread.id),
+                    dmRepository.fetchThreadUnreadCount(thread.id, userId, lastReadAt),
+                ]);
 
-    if (includeThreadMessages) {
-        await Promise.all(
-            paginatedSummaries.map(async ({ thread }) => {
-                const latestMessages = await getThreadMessagesPage(thread.id, pageSize + 1);
-                threadMessagesByThreadId?.set(thread.id, {
-                    messages: latestMessages.slice(0, pageSize).reverse(),
-                    hasMore: latestMessages.length > pageSize,
-                });
+                return {
+                    thread,
+                    latestMessage,
+                    unreadCount,
+                };
             })
         );
-    }
 
-    const groupedThreads = paginatedSummaries.map(({ thread, latestMessage, unreadCount }) => {
-        const otherUserId = thread.user1_id === userId ? thread.user2_id : thread.user1_id;
-        const otherUser = usersMap.get(otherUserId) || null;
-        const latestTimestamp = latestMessage?.timestamp || new Date(0).toISOString();
-        const latestMessagePreview = getDmPreview(
-            latestMessage
-                ? withMessageAttachments(
-                    latestMessage,
-                    latestAttachmentsByMessageId.get(latestMessage.id || '') || []
-                )
-                : undefined
+        threadSummaries.sort(
+            (a, b) =>
+                new Date(b.latestMessage?.timestamp || 0).getTime() -
+                new Date(a.latestMessage?.timestamp || 0).getTime()
         );
-        const threadMessages = threadMessagesByThreadId?.get(thread.id);
+
+        const paginatedSummaries = shouldPaginate
+            ? threadSummaries.slice(offset, offset + pageSize)
+            : threadSummaries;
+        const latestAttachmentsByMessageId = await attachmentRepository.fetchDmAttachmentMap(
+            paginatedSummaries
+                .map(({ latestMessage }) => latestMessage?.id)
+                .filter((id): id is string => typeof id === 'string')
+        );
+
+        const includeThreadMessages = !shouldPaginate;
+        const threadMessagesByThreadId = includeThreadMessages
+            ? new Map<string, { messages: Array<any>; hasMore: boolean }>()
+            : null;
+
+        if (includeThreadMessages) {
+            await Promise.all(
+                paginatedSummaries.map(async ({ thread }) => {
+                    const latestMessages = await getThreadMessagesPage(thread.id, pageSize + 1);
+                    threadMessagesByThreadId?.set(thread.id, {
+                        messages: latestMessages.slice(0, pageSize).reverse(),
+                        hasMore: latestMessages.length > pageSize,
+                    });
+                })
+            );
+        }
+
+        const groupedThreads = paginatedSummaries.map(({ thread, latestMessage, unreadCount }) => {
+            const otherUserId = thread.user1_id === userId ? thread.user2_id : thread.user1_id;
+            const otherUser = usersMap.get(otherUserId) || null;
+            const latestTimestamp = latestMessage?.timestamp || new Date(0).toISOString();
+            const latestMessagePreview = getDmPreview(
+                latestMessage
+                    ? withMessageAttachments(
+                        latestMessage,
+                        latestAttachmentsByMessageId.get(latestMessage.id || '') || []
+                    )
+                    : undefined
+            );
+            const threadMessages = threadMessagesByThreadId?.get(thread.id);
+
+            return {
+                thread_id: thread.id,
+                other_user: otherUser,
+                unread_count: unreadCount,
+                recipient_id: otherUserId,
+                latest_message_timestamp: latestTimestamp,
+                latest_message_preview: latestMessagePreview,
+                messages: threadMessages?.messages ?? undefined,
+                has_more_messages: threadMessages?.hasMore ?? undefined,
+            };
+        });
+
+        await redis.set(cacheKey, JSON.stringify({ threads: groupedThreads, hasMore: shouldPaginate && offset + pageSize < threadSummaries.length }), 'EX', 1800);
 
         return {
-            thread_id: thread.id,
-            other_user: otherUser,
-            unread_count: unreadCount,
-            recipient_id: otherUserId,
-            latest_message_timestamp: latestTimestamp,
-            latest_message_preview: latestMessagePreview,
-            messages: threadMessages?.messages ?? undefined,
-            has_more_messages: threadMessages?.hasMore ?? undefined,
+            threads: groupedThreads,
+            hasMore: shouldPaginate && offset + pageSize < threadSummaries.length,
         };
-    });
+    }
 
-    return {
-        threads: groupedThreads,
-        hasMore: shouldPaginate && offset + pageSize < threadSummaries.length,
-    };
 }
 
 export async function getUnreadCounts(userId: string): Promise<{ unreadCounts: Record<string, number>; totalUnread: number }> {
@@ -404,4 +494,23 @@ export async function markThreadAsRead(threadId: string, userId: string): Promis
     }
 
     return { success: true };
+}
+
+
+export async function getdmMessageContext(messageId: string){
+
+        const message = await dmRepository.getThreads(messageId)
+
+        if(!message){
+            throw new Error("no thread found the given messsage id")
+        }
+        const thread = await dmRepository.getUsersFromDm(messageId)
+        
+        return {
+            threadId: thread.id,
+            user1Id: thread.user1_id,
+            user2Id: thread.user2_id,
+            senderId: message.sender_id,
+        };
+
 }

@@ -1,32 +1,7 @@
 import { supabase } from '../client/supabase';
+import * as DmMessageTypes from '../types/dmMessage.types';
 
-export type DmThread = {
-    id: string;
-    user1_id: string;
-    user2_id: string;
-};
-
-export type DmThreadReadStatus = {
-    thread_id: string;
-    last_read_at: string;
-};
-
-export type DmThreadUser = {
-    id: string;
-    username: string | null;
-    avatar_url: string | null;
-};
-
-export type DmMessageRecord = {
-    id?: string;
-    thread_id: string;
-    sender_id: string;
-    timestamp: string;
-    media_url?: unknown;
-    content?: string | null;
-};
-
-export async function fetchDmThread(threadId: string): Promise<DmThread | null> {
+export async function fetchDmThread(threadId: string): Promise<DmMessageTypes.DmThread | null> {
     const { data, error } = await supabase
         .from('dm_threads')
         .select('id, user1_id, user2_id')
@@ -37,10 +12,10 @@ export async function fetchDmThread(threadId: string): Promise<DmThread | null> 
         throw error;
     }
 
-    return (data as DmThread | null) || null;
+    return (data as DmMessageTypes.DmThread | null) || null;
 }
 
-export async function findDmThread(user1Id: string, user2Id: string): Promise<DmThread | null> {
+export async function findDmThread(user1Id: string, user2Id: string): Promise<DmMessageTypes.DmThread | null> {
     const { data, error } = await supabase
         .from('dm_threads')
         .select('id, user1_id, user2_id')
@@ -52,10 +27,10 @@ export async function findDmThread(user1Id: string, user2Id: string): Promise<Dm
         throw error;
     }
 
-    return (data as DmThread | null) || null;
+    return (data as DmMessageTypes.DmThread | null) || null;
 }
 
-export async function createDmThread(user1Id: string, user2Id: string): Promise<DmThread> {
+export async function createDmThread(user1Id: string, user2Id: string): Promise<DmMessageTypes.DmThread> {
     const { data, error } = await supabase
         .from('dm_threads')
         .insert({ user1_id: user1Id, user2_id: user2Id })
@@ -66,7 +41,7 @@ export async function createDmThread(user1Id: string, user2Id: string): Promise<
         throw error;
     }
 
-    return data as DmThread;
+    return data as DmMessageTypes.DmThread;
 }
 
 export async function insertDmMessage(payload: {
@@ -184,7 +159,7 @@ export async function fetchDmThreadMessages(threadId: string, offset: number, pa
     return data || [];
 }
 
-export async function fetchUserDmThreads(userId: string): Promise<DmThread[]> {
+export async function fetchUserDmThreads(userId: string): Promise<DmMessageTypes.DmThread[]> {
     const { data, error } = await supabase
         .from('dm_threads')
         .select('id, user1_id, user2_id')
@@ -194,10 +169,10 @@ export async function fetchUserDmThreads(userId: string): Promise<DmThread[]> {
         throw error;
     }
 
-    return (data as DmThread[] | null) || [];
+    return (data as DmMessageTypes.DmThread[] | null) || [];
 }
 
-export async function fetchUsersByIds(userIds: string[]): Promise<DmThreadUser[]> {
+export async function fetchUsersByIds(userIds: string[]): Promise<DmMessageTypes.DmThreadUser[]> {
     if (userIds.length === 0) return [];
 
     const { data, error } = await supabase
@@ -209,10 +184,10 @@ export async function fetchUsersByIds(userIds: string[]): Promise<DmThreadUser[]
         throw error;
     }
 
-    return (data as DmThreadUser[] | null) || [];
+    return (data as DmMessageTypes.DmThreadUser[] | null) || [];
 }
 
-export async function fetchThreadReadStatuses(userId: string, threadIds: string[]): Promise<DmThreadReadStatus[]> {
+export async function fetchThreadReadStatuses(userId: string, threadIds: string[]): Promise<DmMessageTypes.DmThreadReadStatus[]> {
     if (threadIds.length === 0) return [];
 
     const { data, error } = await supabase
@@ -225,10 +200,10 @@ export async function fetchThreadReadStatuses(userId: string, threadIds: string[
         throw error;
     }
 
-    return (data as DmThreadReadStatus[] | null) || [];
+    return (data as DmMessageTypes.DmThreadReadStatus[] | null) || [];
 }
 
-export async function fetchThreadLatestMessage(threadId: string): Promise<DmMessageRecord | null> {
+export async function fetchThreadLatestMessage(threadId: string): Promise<DmMessageTypes.DmMessageRecord | null> {
     const { data, error } = await supabase
         .from('dm_messages')
         .select('id, thread_id, sender_id, timestamp, media_url, content')
@@ -241,7 +216,7 @@ export async function fetchThreadLatestMessage(threadId: string): Promise<DmMess
         throw error;
     }
 
-    return (data as DmMessageRecord | null) || null;
+    return (data as DmMessageTypes.DmMessageRecord | null) || null;
 }
 
 export async function fetchThreadUnreadCount(threadId: string, userId: string, lastReadAt?: string): Promise<number> {
@@ -320,4 +295,41 @@ export async function upsertThreadReadStatus(threadId: string, userId: string, l
     if (error) {
         throw error;
     }
+}
+
+export async function getThreads(messageId: string){
+        const { data: message, error: messageError } = await supabase
+            .from('dm_messages')
+            .select('id, thread_id, sender_id')
+            .eq('id', messageId)
+            .maybeSingle();
+    
+        if (messageError) {
+            throw messageError;
+        }
+    
+        if (!message?.thread_id) {
+            return null;
+        }
+
+        return message;
+}
+
+export async function getUsersFromDm(threadId: string){
+        const { data: thread, error: threadError } = await supabase
+            .from('dm_threads')
+            .select('id, user1_id, user2_id')
+            .eq('id', threadId)
+            .maybeSingle();
+    
+        if (threadError) {
+            throw threadError;
+        }
+    
+        if (!thread) {
+            throw new Error("no thread found here")
+        }
+
+        return thread;
+    
 }

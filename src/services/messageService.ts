@@ -284,3 +284,13 @@ export async function sendChannelMessage(input: {
 
     return payloadMessage;
 }
+
+export async function getChannelMessageContext(messageId: string){
+    const result = await messageRepository.fetchChannelwithSender(messageId);
+
+    if(!result?.channelId || !result.senderId ){
+        throw new Error("result not found, senderId or ChannelId was not found");
+    }
+
+    return result;
+}

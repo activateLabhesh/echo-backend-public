@@ -93,141 +93,141 @@ export const testRoute = (_req: Request, res: Response) => {
   res.status(200).json({ message: 'Test route is working!' });
 };
 
-//register route
-export const register = async (req: Request, res: Response): Promise <void> => {
-  const { email, password ,username, fullname, date_of_birth} = req.body;
+// //register route
+// export const register = async (req: Request, res: Response): Promise <void> => {
+//   const { email, password ,username, fullname, date_of_birth} = req.body;
 
-  const { data: existingEmail } = await supabaseAdmin
-  .from('users')
-  .select('id')
-  .eq('email', email)
-  .maybeSingle();
+//   const { data: existingEmail } = await supabaseAdmin
+//   .from('users')
+//   .select('id')
+//   .eq('email', email)
+//   .maybeSingle();
 
-  if (existingEmail) {
-    //409 error is for conflicting request
-  res.status(409).json({ message: 'Conflict in data: User already registered' });
-  return
-  }
+//   if (existingEmail) {
+//     //409 error is for conflicting request
+//   res.status(409).json({ message: 'Conflict in data: User already registered' });
+//   return
+//   }
 
-  const { data: existingUsername } = await supabaseAdmin
-  .from('users')
-  .select('id')
-  .eq('username', username)
-  .maybeSingle();
+//   const { data: existingUsername } = await supabaseAdmin
+//   .from('users')
+//   .select('id')
+//   .eq('username', username)
+//   .maybeSingle();
 
-  if (existingUsername) {
-  res.status(409).json({ message: 'Conflict in data: Username already taken' });
-  return
-  }
+//   if (existingUsername) {
+//   res.status(409).json({ message: 'Conflict in data: Username already taken' });
+//   return
+//   }
 
-  const { data: signUpData, error } = await supabase.auth.signUp({
-    email,
-    password,
-    options: {
-      emailRedirectTo: `${FRONTEND_URL}/auth/callback?next=/login`,
-    },
-  });
+//   const { data: signUpData, error } = await supabase.auth.signUp({
+//     email,
+//     password,
+//     options: {
+//       emailRedirectTo: `${FRONTEND_URL}/auth/callback?next=/login`,
+//     },
+//   });
 
-  if (error || !signUpData?.user?.id) {
-    res.status(400).json({ message: `$Bad Request Message: ${error?.message}` });
-    return
-  }
-  const userId = signUpData.user.id;
+//   if (error || !signUpData?.user?.id) {
+//     res.status(400).json({ message: `$Bad Request Message: ${error?.message}` });
+//     return
+//   }
+//   const userId = signUpData.user.id;
 
-  const { error: insertError } = await supabaseAdmin
-  .from('users')
-  .insert([
-    {
-      id: userId,
-      email,
-      username,
-      fullname,
-      date_of_birth,
-      avatar_url: null,
-      status: 'offline',
-      bio:'', //present in supabase
-    },
-  ]);
+//   const { error: insertError } = await supabaseAdmin
+//   .from('users')
+//   .insert([
+//     {
+//       id: userId,
+//       email,
+//       username,
+//       fullname,
+//       date_of_birth,
+//       avatar_url: null,
+//       status: 'offline',
+//       bio:'', //present in supabase
+//     },
+//   ]);
 
-  if (insertError) {
+//   if (insertError) {
 
-    res.status(500).json({ message: `Insert Error. ${insertError.message}` });
-    return
-  }
+//     res.status(500).json({ message: `Insert Error. ${insertError.message}` });
+//     return
+//   }
 
-  res.status(201).json({ message: 'User registered.' });
-};
+//   res.status(201).json({ message: 'User registered.' });
+// };
 
-// login route
-export const login = async (req: Request, res: Response):Promise <void> => {
-  const { identifier, password } = req.body;
-  const isMobileApp = req.headers['x-client-type'] === 'Mobile'; //checks where the request is from
+// // login route
+// export const login = async (req: Request, res: Response):Promise <void> => {
+//   const { identifier, password } = req.body;
+//   const isMobileApp = req.headers['x-client-type'] === 'Mobile'; //checks where the request is from
 
-  let email =identifier;
-  //check if identifier is not email, then it is username. search database for that username and extract email from it
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier)) {
-    const { data, error } = await supabaseAdmin
-      .from('users')
-      .select('email')
-      .eq('username', identifier)
-      .single();
+//   let email =identifier;
+//   //check if identifier is not email, then it is username. search database for that username and extract email from it
+//   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier)) {
+//     const { data, error } = await supabaseAdmin
+//       .from('users')
+//       .select('email')
+//       .eq('username', identifier)
+//       .single();
 
-    if (error || !data) {
-      res.status(400).json({ message: 'Invalid username or user not found' });
-      return;
-    }
+//     if (error || !data) {
+//       res.status(400).json({ message: 'Invalid username or user not found' });
+//       return;
+//     }
 
-    email = data.email;
-  }
+//     email = data.email;
+//   }
 
-  const { data, error } = await supabase.auth.signInWithPassword({
-    email,
-    password,
-  });
+//   const { data, error } = await supabase.auth.signInWithPassword({
+//     email,
+//     password,
+//   });
 
-  if (error || !data.session) {
-    res.status(401).json({ message: error?.message || 'Unauthorized: Login failed' });
-    return
-  }
+//   if (error || !data.session) {
+//     res.status(401).json({ message: error?.message || 'Unauthorized: Login failed' });
+//     return
+//   }
 
-  const { access_token, refresh_token, user } = data.session;
+//   const { access_token, refresh_token, user } = data.session;
 
-  const { data: userDetails, error: fetchError } = await supabaseAdmin
-  .from('users')
-  .select('id, email, username, fullname, avatar_url, bio, date_of_birth, status,created_at')
-  .eq('id', user.id)
-  .maybeSingle();
+//   const { data: userDetails, error: fetchError } = await supabaseAdmin
+//   .from('users')
+//   .select('id, email, username, fullname, avatar_url, bio, date_of_birth, status,created_at')
+//   .eq('id', user.id)
+//   .maybeSingle();
 
-if (fetchError || !userDetails) {
-  res.status(500).json({ message: 'Failed to fetch user profile details' });
-  return;
-}
+// if (fetchError || !userDetails) {
+//   res.status(500).json({ message: 'Failed to fetch user profile details' });
+//   return;
+// }
 
-  if(isMobileApp){
-    await recordMobileActivity(user.id);
+//   if(isMobileApp){
+//     await recordMobileActivity(user.id);
 
-    res.status(200).json({
-      message : "Logged In",
-      user: userDetails,
-      accessToken:access_token,
-      refreshToken:refresh_token,
-      expiresIn: data.session.expires_in,
-    })
-  } else{
-    res.cookie('access_token', access_token, cookieOptions);
-    res.cookie('refresh_token', refresh_token, {
-      ...cookieOptions,
-      maxAge: REFRESH_TOKEN_MAX_AGE,
-    });
-    res.status(200).json({ 
-      message: 'Logged in', 
-      user: userDetails,
-      accessToken: access_token,
-      refreshToken: refresh_token,
-      expiresIn: data.session.expires_in
-    });
-  }
-};
+//     res.status(200).json({
+//       message : "Logged In",
+//       user: userDetails,
+//       accessToken:access_token,
+//       refreshToken:refresh_token,
+//       expiresIn: data.session.expires_in,
+//     })
+//   } else{
+//     res.cookie('access_token', access_token, cookieOptions);
+//     res.cookie('refresh_token', refresh_token, {
+//       ...cookieOptions,
+//       maxAge: REFRESH_TOKEN_MAX_AGE,
+//     });
+//     res.status(200).json({ 
+//       message: 'Logged in', 
+//       user: userDetails,
+//       accessToken: access_token,
+//       refreshToken: refresh_token,
+//       expiresIn: data.session.expires_in
+//     });
+//   }
+// };
 
 //refresh tokens
 export const refreshToken = async (req: Request, res: Response): Promise <void> => {

@@ -147,3 +147,21 @@ export async function fetchChannelMedia(channelIds: string[]) {
 
     return data || [];
 }
+
+export async function fetchChannelwithSender(messageId: string){
+    const { data, error } = await supabase
+        .from('messages')
+        .select('id, channel_id, sender_id')
+        .eq('id', messageId)
+        .maybeSingle();
+
+    if (error) {
+        throw error;
+    }
+
+    if (!data?.channel_id || !data?.sender_id) {
+        return null;
+    }
+
+    return { channelId: data.channel_id, senderId: data.sender_id };
+}

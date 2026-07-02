@@ -2,7 +2,7 @@
 import { Server, Socket } from "socket.io";
 import { supabase } from "../client/supabase";
 import { checkChannelSendPermission } from "../controllers/channelController";
-import { saveDMMessage } from "../lib/dmMessageServices";
+import { saveDMMessage } from "../services/dmService"
 import { saveMessage } from "../lib/messageServices";
 import { extractGifMediaUrl } from "../lib/messageMedia";
 import { markUserOffline, markUserOnline } from "../lib/userPresence";

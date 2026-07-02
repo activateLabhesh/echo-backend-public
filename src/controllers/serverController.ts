@@ -4,6 +4,7 @@ import { AuthenticatedRequest } from '../middleware/authMiddleware';
 import {v4} from 'uuid';
 import { RequestWithBusboy } from '../middleware/busboyMiddleware';
 import { checkOwnerOrAdmin } from './roleController';
+import * as serverServices from '../services/serverService'
 
 const normalizeRoleLabel = (value: unknown): string =>
   (value || '').toString().trim().toLowerCase();
@@ -238,31 +239,8 @@ export const getServers = async (req: AuthenticatedRequest, res: Response): Prom
           res.status(401).json({ error: 'Not authenticated or user ID missing' });
           return;
       }
-
-      const { data: memberEntries, error: memberError } = await supabase
-          .from('server_members')
-          .select('server_id')
-          .eq('user_id', userId); 
-
-      if (memberError) {
-          throw new Error(`Database error fetching memberships: ${memberError.message}`);
-      }
-
-      if (!memberEntries || memberEntries.length === 0) {
-          res.status(200).json([]);
-          return;
-      }
-
-      const serverIds = memberEntries.map(entry => entry.server_id);
-
-      const { data: servers, error: serverError } = await supabase
-          .from('servers')
-          .select('name, icon_url, id')
-          .in('id', serverIds);
-
-      if (serverError) {
-          throw new Error(`Database error fetching servers: ${serverError.message}`);
-      }
+      
+      const servers = await serverServices.fetchServer(userId);
 
       res.status(200).json(servers || []);
 

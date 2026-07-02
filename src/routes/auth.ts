@@ -1,8 +1,9 @@
 import express from 'express';
 
 import {
-    register, 
-    login,handleGoogleOAuth,
+    // register, 
+    // login,
+    handleGoogleOAuth,
     sendResetPasswordEmail,
     updatePassword,refreshToken, 
     logout,testRoute, 
@@ -26,8 +27,8 @@ router.post('/refresh', refreshToken);
 router.get('/logout',logout);
 
 //older routes
-router.post('/register',register);
-router.post('/login',login);
+// router.post('/register',register);
+// router.post('/login',login);
 router.post('/forgot-password', sendResetPasswordEmail);
 router.post('/reset-password', updatePassword);
 router.post('/change-password', changePassword);
